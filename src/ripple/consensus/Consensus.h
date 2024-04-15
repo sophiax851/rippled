@@ -623,6 +623,7 @@ Consensus<Adaptor>::startRound(
     hash_set<NodeID_t> const& nowUntrusted,
     bool proposing)
 {
+    JLOG(j_.debug()) << "StartRound is called ";
     if (firstRound_)
     {
         // take our initial view of closeTime_ from the seed ledger
@@ -657,7 +658,7 @@ Consensus<Adaptor>::startRound(
             JLOG(j_.info()) << "Correct LCL is: " << prevLedgerID;
         }
     }
-
+    
     startRoundInternal(now, prevLedgerID, prevLedger, startMode);
 }
 template <class Adaptor>
@@ -817,10 +818,12 @@ template <class Adaptor>
 void
 Consensus<Adaptor>::timerEntry(NetClock::time_point const& now)
 {
+    JLOG(j_.debug()) << "timerEntry is called ";
     // Nothing to do if we are currently working on a ledger
     if (phase_ == ConsensusPhase::accepted)
+    {   JLOG(j_.debug()) << "timerEntry: still in accepted phase, can't switch phase "
         return;
-
+    }
     now_ = now;
 
     // Check we are on the proper ledger (this may change phase_)

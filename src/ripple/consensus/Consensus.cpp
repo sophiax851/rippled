@@ -55,8 +55,8 @@ shouldCloseLedger(
         JLOG(j.debug()) << "Others have closed"
                         << " Prop: proposersClosed: " << proposersClosed
                         << " Prop: proposersValidated: " << proposersValidated
-                        << " TimeSincePreClose: " << timeSincePrevClose
-                        << " openTime: " << openTime;
+                        << " TimeSincePreClose: " << timeSincePrevClose.count()
+                        << " openTime: " << openTime.count();
         return true;
     }
 

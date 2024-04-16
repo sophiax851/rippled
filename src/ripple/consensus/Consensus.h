@@ -821,7 +821,7 @@ Consensus<Adaptor>::timerEntry(NetClock::time_point const& now)
     JLOG(j_.debug()) << "timerEntry is called ";
     // Nothing to do if we are currently working on a ledger
     if (phase_ == ConsensusPhase::accepted)
-    {   JLOG(j_.debug()) << "timerEntry: still in accepted phase, can't switch phase "
+    {   JLOG(j_.debug()) << "timerEntry: still in accepted phase, can't switch phase ";
         return;
     }
     now_ = now;

@@ -52,7 +52,12 @@ shouldCloseLedger(
     if ((proposersClosed + proposersValidated) > (prevProposers / 2))
     {
         // If more than half of the network has closed, we close
-        JLOG(j.trace()) << "Others have closed";
+	JLOG(j.debug()) << "Others have closed"
+                        << " Prop: proposersClosed: " << proposersClosed
+                        << " Prop: proposersValidated: " << proposersValidated
+                        << " Prop: prevProposers: " << prevProposers
+                        << " TimeSincePreClose: " << timeSincePrevClose.count()
+                        << " openTime: " << openTime.count();
         return true;
     }
 

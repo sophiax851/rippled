@@ -1915,7 +1915,7 @@ PeerImp::onMessage(std::shared_ptr<protocol::TMProposeSet> const& m)
     protocol::TMProposeSet& set = *m;
 
     auto const sig = makeSlice(set.signature());
-
+    JLOG(p_journal_.info()) << "Proposal: onMessage Entering ProposeSet";
     // Preliminary check for the validity of the signature: A DER encoded
     // signature can't be longer than 72 bytes.
     if ((std::clamp<std::size_t>(sig.size(), 64, 72) != sig.size()) ||
@@ -2012,6 +2012,7 @@ PeerImp::onMessage(std::shared_ptr<protocol::TMProposeSet> const& m)
             if (auto peer = weak.lock())
                 peer->checkPropose(isTrusted, m, proposal);
         });
+    JLOG(p_journal_.info()) << "Proposal: onMessage Exiting ProposeSet";
 }
 
 void
@@ -3127,6 +3128,7 @@ PeerImp::checkPropose(
     std::shared_ptr<protocol::TMProposeSet> const& packet,
     RCLCxPeerPos peerPos)
 {
+    auto const start = std::chrono::steady_clock::now();
     JLOG(p_journal_.trace())
         << "Checking " << (isTrusted ? "trusted" : "UNTRUSTED") << " proposal";
 
@@ -3161,6 +3163,11 @@ PeerImp::checkPropose(
                 std::move(haveMessage),
                 protocol::mtPROPOSE_LEDGER);
     }
+    JLOG(p_journal_.debug()) << " checkPropose latency "
+                     << std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count()
+                     << "ms";
 }
 
 void
@@ -3169,6 +3176,7 @@ PeerImp::checkValidation(
     uint256 const& key,
     std::shared_ptr<protocol::TMValidation> const& packet)
 {
+    auto const start = std::chrono::steady_clock::now();
     if (!val->isValid())
     {
         JLOG(p_journal_.debug()) << "Validation forwarded by peer is invalid";
@@ -3204,6 +3212,11 @@ PeerImp::checkValidation(
             << "Exception processing validation: " << ex.what();
         charge(Resource::feeInvalidRequest);
     }
+    JLOG(p_journal_.debug()) << " checkValidation latency "
+                     << std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count()
+                     << "ms";
 }
 
 // Returns the set of peers that can help us get

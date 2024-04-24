@@ -1274,6 +1274,7 @@ Consensus<Adaptor>::phaseEstablish()
 
     // Give everyone a chance to take an initial position
     if (result_->roundTime.read() < parms.ledgerMIN_CONSENSUS)
+        JLOG(j_.warn()) << "Not reached ledgerMIN_CONSENSUS";
         return;
 
     updateOurPositions();
@@ -1586,6 +1587,7 @@ Consensus<Adaptor>::haveConsensus()
         j_);
 
     if (result_->state == ConsensusState::No)
+        JLOG(j_.warn()) << "haveConsensus:No Consensus";
         return false;
 
     // There is consensus, but we need to track if the network moved on
@@ -1595,7 +1597,7 @@ Consensus<Adaptor>::haveConsensus()
         JLOG(j_.error()) << "Unable to reach consensus";
         JLOG(j_.error()) << Json::Compact{getJson(true)};
     }
-
+    JLOG(j_.warn()) << "haveConsensus:Consensus Reached";
     return true;
 }
 

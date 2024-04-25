@@ -1594,8 +1594,9 @@ Consensus<Adaptor>::haveConsensus()
         j_);
 
     if (result_->state == ConsensusState::No)
-        JLOG(j_.warn()) << "haveConsensus:No Consensus";
+    {    JLOG(j_.warn()) << "haveConsensus:No Consensus";
         return false;
+    }
 
     // There is consensus, but we need to track if the network moved on
     // without us.

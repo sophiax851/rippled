@@ -3162,10 +3162,10 @@ PeerImp::checkPropose(
                 protocol::mtPROPOSE_LEDGER);
     }
     JLOG(p_journal_.debug()) << " checkPropose latency "
-                     << std::chrono::duration_cast<std::chrono::milliseconds>(
+                     << std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - start)
                             .count()
-                     << "ms";
+                     << "us";
 }
 
 void
@@ -3211,10 +3211,10 @@ PeerImp::checkValidation(
         charge(Resource::feeInvalidRequest);
     }
     JLOG(p_journal_.debug()) << " checkValidation latency "
-                     << std::chrono::duration_cast<std::chrono::milliseconds>(
+                     << std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - start)
                             .count()
-                     << "ms";
+                     << "us";
 }
 
 // Returns the set of peers that can help us get

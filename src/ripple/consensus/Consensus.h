@@ -1280,8 +1280,9 @@ Consensus<Adaptor>::phaseEstablish()
 
     // Give everyone a chance to take an initial position
     if (result_->roundTime.read() < parms.ledgerMIN_CONSENSUS)
-        JLOG(j_.warn()) << "Not reached ledgerMIN_CONSENSUS";
+    {   JLOG(j_.warn()) << "Not reached ledgerMIN_CONSENSUS";
         return;
+    }
 
     updateOurPositions();
 

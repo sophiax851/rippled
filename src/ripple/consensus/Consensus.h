@@ -832,7 +832,13 @@ Consensus<Adaptor>::timerEntry(NetClock::time_point const& now)
     }
     else if (phase_ == ConsensusPhase::establish)
     {
+        auto const start = std::chrono::steady_clock::now();
         phaseEstablish();
+        JLOG(j_.warn()) << " Latency for calling phaseEstablish "
+                     << std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count()
+                     << "us";
     }
 }
 

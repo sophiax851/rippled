@@ -1915,7 +1915,6 @@ PeerImp::onMessage(std::shared_ptr<protocol::TMProposeSet> const& m)
     protocol::TMProposeSet& set = *m;
 
     auto const sig = makeSlice(set.signature());
-    JLOG(p_journal_.info()) << "Proposal: onMessage Entering ProposeSet";
     // Preliminary check for the validity of the signature: A DER encoded
     // signature can't be longer than 72 bytes.
     if ((std::clamp<std::size_t>(sig.size(), 64, 72) != sig.size()) ||
@@ -2012,7 +2011,6 @@ PeerImp::onMessage(std::shared_ptr<protocol::TMProposeSet> const& m)
             if (auto peer = weak.lock())
                 peer->checkPropose(isTrusted, m, proposal);
         });
-    JLOG(p_journal_.info()) << "Proposal: onMessage Exiting ProposeSet";
 }
 
 void

@@ -835,10 +835,10 @@ Consensus<Adaptor>::timerEntry(NetClock::time_point const& now)
         auto const start = std::chrono::steady_clock::now();
         phaseEstablish();
         JLOG(j_.warn()) << " Latency for calling phaseEstablish "
-                     << std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - start)
-                            .count()
-                     << "us";
+                << std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now() - start)
+                   .count()
+                << "us";
     }
 }
 

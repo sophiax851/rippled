@@ -1340,7 +1340,13 @@ Consensus<Adaptor>::closeLedger()
         auto const it = acquired_.find(pos);
         if (it != acquired_.end())
         {
+            auto const start = std::chrono::steady_clock::now();
             createDisputes(it->second);
+            JLOG(j_.warn()) << " Latency for calling createDispute "
+                << std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now() - start)
+                   .count()
+                << "us";
         }
     }
 }
@@ -1695,8 +1701,15 @@ Consensus<Adaptor>::updateDisputes(NodeID_t const& node, TxSet_t const& other)
     // Ensure we have created disputes against this set if we haven't seen
     // it before
     if (result_->compares.find(other.id()) == result_->compares.end())
+    {
+        auto const start = std::chrono::steady_clock::now();  
         createDisputes(other);
-
+        JLOG(j_.warn()) << " Latency for calling createDispute during updateDisputes"
+                << std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now() - start)
+                   .count()
+                << "us";
+    }
     for (auto& it : result_->disputes)
     {
         auto& d = it.second;

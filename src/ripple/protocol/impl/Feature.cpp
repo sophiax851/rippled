@@ -461,9 +461,13 @@ REGISTER_FEATURE(DID,                           Supported::yes, VoteBehavior::De
 REGISTER_FIX    (fixFillOrKill,                 Supported::yes, VoteBehavior::DefaultNo);
 REGISTER_FIX    (fixNFTokenReserve,             Supported::yes, VoteBehavior::DefaultNo);
 REGISTER_FIX    (fixInnerObjTemplate,           Supported::yes, VoteBehavior::DefaultNo);
+<<<<<<< HEAD
 REGISTER_FEATURE(PriceOracle,                   Supported::yes, VoteBehavior::DefaultNo);
 REGISTER_FIX    (fixEmptyDID,                   Supported::yes, VoteBehavior::DefaultNo);
 REGISTER_FIX    (fixXChainRewardRounding,       Supported::yes, VoteBehavior::DefaultNo);
+=======
+REGISTER_FIX    (fixAMMOverflowOffer,           Supported::yes, VoteBehavior::DefaultYes);
+>>>>>>> a7c4a4772 (fix: improper handling of large synthetic AMM offers:)
 
 // The following amendments are obsolete, but must remain supported
 // because they could potentially get enabled.

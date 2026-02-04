@@ -1,9 +1,6 @@
 var searchData=
 [
-  ['ledgerreplayclient_0',['LedgerReplayClient',['../classripple_1_1LedgerDeltaAcquire.html#a4156475fb02014076bb365159cbd1810',1,'ripple::LedgerDeltaAcquire::LedgerReplayClient()'],['../classripple_1_1SkipListAcquire.html#a4156475fb02014076bb365159cbd1810',1,'ripple::SkipListAcquire::LedgerReplayClient()'],['../classripple_1_1LedgerReplayer.html#a4156475fb02014076bb365159cbd1810',1,'ripple::LedgerReplayer::LedgerReplayClient()'],['../classripple_1_1LedgerReplayTask.html#a4156475fb02014076bb365159cbd1810',1,'ripple::LedgerReplayTask::LedgerReplayClient()']]],
-  ['negativeunlvoteinternal_5ftest_1',['NegativeUNLVoteInternal_test',['../classripple_1_1NegativeUNLVote.html#a008614bce957cc424e60b19aa4ac4333',1,'ripple::NegativeUNLVote']]],
-  ['negativeunlvotescoretable_5ftest_2',['NegativeUNLVoteScoreTable_test',['../classripple_1_1NegativeUNLVote.html#a02bbec76313b08a8ae44e40de39a9fa4',1,'ripple::NegativeUNLVote']]],
-  ['tertoint_3',['TERtoInt',['../classripple_1_1TERSubset.html#aab2b9ff77489c297378ae92409b986d3',1,'ripple::TERSubset']]],
-  ['to_5fstring_4',['to_string',['../classripple_1_1SHAMapHash.html#a45075cb4486425ad7f55bb1ed87d5a49',1,'ripple::SHAMapHash']]],
-  ['txset_5',['TxSet',['../classripple_1_1test_1_1csf_1_1TxSet_1_1MutableTxSet.html#a87010d49e2890873f279fddb5ce00158',1,'ripple::test::csf::TxSet::MutableTxSet']]]
+  ['rcltxset_0',['RCLTxSet',['../classxrpl_1_1RCLTxSet_1_1MutableTxSet.html#ae77e0f98f13b953d575d7872bf6e1186',1,'xrpl::RCLTxSet::MutableTxSet']]],
+  ['root_1',['root',['../classxrpl_1_1Number.html#af59083b29186c11c2808135c5ff075b8',1,'xrpl::Number']]],
+  ['root2_2',['root2',['../classxrpl_1_1Number.html#ab83e07ef7e17606d7bcaeabe05ec1236',1,'xrpl::Number']]]
 ];

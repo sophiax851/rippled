@@ -236,9 +236,34 @@ bool
 SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
 {
     // Copy a single record from node to dbRotating_
-    dbRotating_->fetchNodeObject(
-        node.getHash().asUInt256(), 0, NodeStore::FetchType::Synchronous, true);
-    if ((++nodeCount % checkHealthInterval_) == 0u)
+    auto const hash = node.getHash().asUInt256();
+    auto const obj = dbRotating_->fetchNodeObject(
+        hash, 0, NodeStore::FetchType::Synchronous, true);
+
+    if (!obj)
+    {
+        // The node was reachable in-memory during visitNodes (otherwise we
+        // would not be here) but is absent from both writable and archive
+        // backends. After this rotation completes the in-memory reference
+        // may be released and the node will be unrecoverable.
+        ++copyMissCount_;
+        JLOG(journal_.warn())
+            << "SHAMapStore: copyNode MISS rotation=" << rotationId_.load()
+            << " seq=" << copyingSeq_.load() << " hash=" << hash
+            << " type=" << static_cast<int>(node.getType())
+            << " count=" << nodeCount << " writable=" << writableName_
+            << " archive=" << archiveName_;
+    }
+
+    ++nodeCount;
+    if ((nodeCount % progressLogInterval_) == 0u)
+    {
+        JLOG(journal_.warn())
+            << "SHAMapStore: copyNode PROGRESS rotation=" << rotationId_.load()
+            << " seq=" << copyingSeq_.load() << " processed=" << nodeCount
+            << " copyMisses=" << copyMissCount_.load();
+    }
+    if ((nodeCount % checkHealthInterval_) == 0u)
     {
         if (healthWait() == HealthResult::Stopping)
             return false;
@@ -295,6 +320,25 @@ SHAMapStoreImp::run()
         // will delete up to (not including) lastRotated
         if (readyToRotate)
         {
+            auto const rot = ++rotationId_;
+            copyingSeq_ = validatedSeq;
+            copyMissCount_ = 0;
+            freshenMissCount_ = 0;
+            {
+                auto const names = dbRotating_->getBackendNames();
+                writableName_ = names.first;
+                archiveName_ = names.second;
+            }
+
+            JLOG(journal_.warn())
+                << "SHAMapStore: rotation BEGIN id=" << rot
+                << " validatedSeq=" << validatedSeq
+                << " lastRotated=" << lastRotated
+                << " deleteInterval=" << deleteInterval_
+                << " canDelete=" << canDelete_
+                << " writable=" << writableName_
+                << " archive=" << archiveName_;
+
             JLOG(journal_.warn()) << "rotating  validatedSeq " << validatedSeq << " lastRotated "
                                   << lastRotated << " deleteInterval " << deleteInterval_
                                   << " canDelete_ " << canDelete_ << " state "
@@ -329,6 +373,10 @@ SHAMapStoreImp::run()
             // Only log if we completed without a "health" abort
             JLOG(journal_.debug())
                 << "copied ledger " << validatedSeq << " nodecount " << nodeCount;
+            JLOG(journal_.warn())
+                << "SHAMapStore: rotation COPY_DONE id=" << rot
+                << " seq=" << validatedSeq << " nodeCount=" << nodeCount
+                << " copyMisses=" << copyMissCount_.load();
 
             JLOG(journal_.debug()) << "freshening caches";
             freshenCaches();
@@ -336,10 +384,14 @@ SHAMapStoreImp::run()
                 return;
             // Only log if we completed without a "health" abort
             JLOG(journal_.debug()) << validatedSeq << " freshened caches";
+            JLOG(journal_.warn())
+                << "SHAMapStore: rotation FRESHEN_DONE id=" << rot
+                << " freshenMisses=" << freshenMissCount_.load();
 
             JLOG(journal_.trace()) << "Making a new backend";
             auto newBackend = makeBackendRotating();
             JLOG(journal_.debug()) << validatedSeq << " new backend " << newBackend->getName();
+            auto const newWritableName = newBackend->getName();
 
             clearCaches(validatedSeq);
             if (healthWait() == HealthResult::Stopping)
@@ -359,6 +411,11 @@ SHAMapStoreImp::run()
                     clearCaches(validatedSeq);
                 });
 
+            JLOG(journal_.warn())
+                << "SHAMapStore: rotation SWAPPED id=" << rot
+                << " newWritable=" << newWritableName
+                << " demotedToArchive=" << writableName_
+                << " droppedArchive=" << archiveName_;
             JLOG(journal_.warn()) << "finished rotation " << validatedSeq;
         }
     }

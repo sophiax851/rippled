@@ -23,6 +23,27 @@
 
 namespace xrpl::NodeStore {
 
+namespace {
+// RAII counter guard for in-flight store/fetch tracking. Must remain
+// noexcept and trivial so it does not affect the hot path beyond two
+// relaxed atomic ops.
+struct InFlightGuard
+{
+    std::atomic<std::int64_t>& counter;
+    explicit InFlightGuard(std::atomic<std::int64_t>& c) noexcept : counter(c)
+    {
+        counter.fetch_add(1, std::memory_order_acq_rel);
+    }
+    ~InFlightGuard()
+    {
+        counter.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    InFlightGuard(InFlightGuard const&) = delete;
+    InFlightGuard&
+    operator=(InFlightGuard const&) = delete;
+};
+}  // namespace
+
 DatabaseRotatingImp::DatabaseRotatingImp(
     Scheduler& scheduler,
     int readThreads,
@@ -48,13 +69,18 @@ DatabaseRotatingImp::rotate(
     // Pass these two names to the callback function
     std::string const newWritableBackendName = newBackend->getName();
     std::string newArchiveBackendName;
+    std::string oldArchiveBackendName;
     // Hold on to current archive backend pointer until after the
     // callback finishes. Only then will the archive directory be
     // deleted.
     std::shared_ptr<NodeStore::Backend> oldArchiveBackend;
+    std::uint64_t newGen = 0;
+    std::int64_t pendingStores = 0;
+    std::int64_t pendingFetches = 0;
     {
         std::scoped_lock const lock(mutex_);
 
+        oldArchiveBackendName = archiveBackend_->getName();
         archiveBackend_->setDeletePath();
         oldArchiveBackend = std::move(archiveBackend_);
 
@@ -62,6 +88,33 @@ DatabaseRotatingImp::rotate(
         newArchiveBackendName = archiveBackend_->getName();
 
         writableBackend_ = std::move(newBackend);
+
+        // Bump generation under the lock so store()/fetchNodeObject()
+        // callers that captured the old writable pointer can detect the
+        // swap via genBefore != genAfter.
+        newGen = rotationGen_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        pendingStores = inFlightStores_.load(std::memory_order_acquire);
+        pendingFetches = inFlightFetches_.load(std::memory_order_acquire);
+    }
+
+    if (pendingStores > 0 || pendingFetches > 0)
+    {
+        JLOG(j_.warn())
+            << "Rotating: SWAP raced gen=" << newGen
+            << " inFlightStores=" << pendingStores
+            << " inFlightFetches=" << pendingFetches
+            << " newWritable=" << newWritableBackendName
+            << " demotedToArchive=" << newArchiveBackendName
+            << " markedForDelete=" << oldArchiveBackendName
+            << " (in-flight ops captured a now-stale backend pointer)";
+    }
+    else
+    {
+        JLOG(j_.debug())
+            << "Rotating: SWAP clean gen=" << newGen
+            << " newWritable=" << newWritableBackendName
+            << " demotedToArchive=" << newArchiveBackendName
+            << " markedForDelete=" << oldArchiveBackendName;
     }
 
     f(newWritableBackendName, newArchiveBackendName);
@@ -99,18 +152,51 @@ DatabaseRotatingImp::sync()
     writableBackend_->sync();
 }
 
+std::pair<std::string, std::string>
+DatabaseRotatingImp::getBackendNames() const
+{
+    std::scoped_lock const lock(mutex_);
+    return {writableBackend_->getName(), archiveBackend_->getName()};
+}
+
 void
 DatabaseRotatingImp::store(NodeObjectType type, Blob&& data, uint256 const& hash, std::uint32_t)
 {
+    InFlightGuard const ifg(inFlightStores_);
+    auto const genBefore = rotationGen_.load(std::memory_order_acquire);
+
     auto nObj = NodeObject::createObject(type, std::move(data), hash);
 
     auto const backend = [&] {
         std::scoped_lock const lock(mutex_);
         return writableBackend_;
     }();
+    auto const backendName = backend->getName();
 
     backend->store(nObj);
     storeStats(1, nObj->getData().size());
+
+    auto const genAfter = rotationGen_.load(std::memory_order_acquire);
+    if (genAfter != genBefore)
+    {
+        auto const delta = genAfter - genBefore;
+        // delta == 1 : the write landed in what is now the archive backend.
+        //              The node is still on disk and a duplicate=true fetch
+        //              will pull it back, but the next rotation will drop
+        //              the archive unless copyNode/freshen re-stores it.
+        // delta >= 2 : the write landed in a backend already marked for
+        //              deletion. As soon as this store() releases its
+        //              shared_ptr, the backend destructor will delete the
+        //              files. This is silent permanent loss.
+        auto const& strm = (delta >= 2) ? j_.error() : j_.warn();
+        JLOG(strm)
+            << "Rotating: store RACED rotation hash=" << hash
+            << " backend=" << backendName
+            << " genBefore=" << genBefore << " genAfter=" << genAfter
+            << " delta=" << delta
+            << (delta == 1 ? " (wrote into demoted-to-archive backend)"
+                           : " (wrote into backend slated for DELETION)");
+    }
 }
 
 std::shared_ptr<NodeObject>
@@ -120,6 +206,9 @@ DatabaseRotatingImp::fetchNodeObject(
     FetchReport& fetchReport,
     bool duplicate)
 {
+    InFlightGuard const ifg(inFlightFetches_);
+    auto const genBefore = rotationGen_.load(std::memory_order_acquire);
+
     auto fetch = [&](std::shared_ptr<Backend> const& backend) {
         Status status = Status::Ok;
         std::shared_ptr<NodeObject> nodeObject;
@@ -173,12 +262,43 @@ DatabaseRotatingImp::fetchNodeObject(
 
             // Update writable backend with data from the archive backend
             if (duplicate)
+            {
                 writable->store(nodeObject);
+                JLOG(j_.debug())
+                    << "Rotating: archive->writable copy hash=" << hash
+                    << " writable=" << writable->getName()
+                    << " archive=" << archive->getName();
+            }
+        }
+        else if (duplicate)
+        {
+            // duplicate=true means the caller (online-delete copy/freshen)
+            // expected to be able to refresh this node into writable. Missing
+            // from both backends is the silent-loss signal we want to catch.
+            JLOG(j_.warn())
+                << "Rotating: fetchNodeObject MISS (both backends) hash="
+                << hash << " writable=" << writable->getName()
+                << " archive=" << archive->getName();
         }
     }
 
     if (nodeObject)
         fetchReport.wasFound = true;
+
+    auto const genAfter = rotationGen_.load(std::memory_order_acquire);
+    if (genAfter != genBefore)
+    {
+        // The backend pointers used for this fetch are now stale. Reads
+        // are physically safe (the shared_ptr kept the backend alive),
+        // but a MISS here could be a false negative: the node may have
+        // landed in the new writable after we captured the old one.
+        JLOG(j_.warn())
+            << "Rotating: fetchNodeObject RACED rotation hash=" << hash
+            << " genBefore=" << genBefore << " genAfter=" << genAfter
+            << " delta=" << (genAfter - genBefore)
+            << " found=" << (nodeObject ? "yes" : "no")
+            << " duplicate=" << (duplicate ? "yes" : "no");
+    }
 
     return nodeObject;
 }

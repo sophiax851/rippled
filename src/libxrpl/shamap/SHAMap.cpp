@@ -948,6 +948,10 @@ SHAMap::writeNode(NodeObjectType t, intr_ptr::SharedPtr<SHAMapTreeNode> node) co
     Serializer s;
     node->serializeWithPrefix(s);
     f_.db().store(t, std::move(s.modData()), node->getHash().asUInt256(), ledgerSeq_);
+    JLOG(journal_.trace())
+        << "SHAMap: store seq=" << ledgerSeq_
+        << " hash=" << node->getHash()
+        << " type=" << static_cast<int>(t);
     return node;
 }
 

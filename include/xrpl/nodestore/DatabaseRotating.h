@@ -33,6 +33,10 @@ public:
         std::unique_ptr<NodeStore::Backend>&& newBackend,
         std::function<void(std::string const& writableName, std::string const& archiveName)> const&
             f) = 0;
+
+    /** Returns the current (writable, archive) backend names under lock. */
+    virtual std::pair<std::string, std::string>
+    getBackendNames() const = 0;
 };
 
 }  // namespace xrpl::NodeStore

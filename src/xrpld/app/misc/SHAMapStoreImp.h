@@ -56,6 +56,8 @@ private:
     std::string const dbPrefix_ = "rippledb";  // cspell: disable-line
     // check health/stop status as records are copied
     std::uint64_t const checkHealthInterval_ = 1000;
+    // emit a progress log line every N records during copy / freshen
+    std::uint64_t const progressLogInterval_ = 100000;
     // minimum # of ledgers to maintain for health of network
     static std::uint32_t const kMinimumDeletionInterval = 256;
     // minimum # of ledgers required for standalone mode.
@@ -93,6 +95,16 @@ private:
     // as of run() or before
     NetworkOPs* netOPs_ = nullptr;
     LedgerMaster* ledgerMaster_ = nullptr;
+
+    // Correlation state for online-delete diagnostics. Updated by run()
+    // at the start of each rotation pass and read by copyNode /
+    // freshenCache so missing-node logs carry the same identifiers.
+    std::atomic<std::uint64_t> rotationId_{0};
+    std::atomic<std::uint32_t> copyingSeq_{0};
+    std::atomic<std::uint64_t> copyMissCount_{0};
+    std::atomic<std::uint64_t> freshenMissCount_{0};
+    std::string writableName_;
+    std::string archiveName_;
 
     static constexpr auto kNodeStoreName = "NodeStore";
 
@@ -165,15 +177,48 @@ private:
     bool
     freshenCache(CacheInstance& cache)
     {
+        auto const keys = cache.getKeys();
+        JLOG(journal_.warn())
+            << "SHAMapStore: freshen BEGIN rotation=" << rotationId_.load()
+            << " cacheSize=" << keys.size();
+
         std::uint64_t check = 0;
-
-        for (auto const& key : cache.getKeys())
+        std::uint64_t misses = 0;
+        for (auto const& key : keys)
         {
-            dbRotating_->fetchNodeObject(key, 0, NodeStore::FetchType::Synchronous, true);
-            if (!(++check % checkHealthInterval_) && healthWait() == HealthResult::Stopping)
+            auto const obj = dbRotating_->fetchNodeObject(
+                key, 0, NodeStore::FetchType::Synchronous, true);
+            if (!obj)
+            {
+                ++misses;
+                JLOG(journal_.warn())
+                    << "SHAMapStore: freshen MISS rotation="
+                    << rotationId_.load() << " hash=" << key
+                    << " writable=" << writableName_
+                    << " archive=" << archiveName_;
+            }
+            ++check;
+            if ((check % progressLogInterval_) == 0u)
+            {
+                JLOG(journal_.warn())
+                    << "SHAMapStore: freshen PROGRESS rotation="
+                    << rotationId_.load() << " processed=" << check
+                    << " of=" << keys.size() << " misses=" << misses;
+            }
+            if (!(check % checkHealthInterval_) && healthWait() == HealthResult::Stopping)
+            {
+                freshenMissCount_ += misses;
+                JLOG(journal_.warn())
+                    << "SHAMapStore: freshen ABORTED rotation="
+                    << rotationId_.load() << " processed=" << check
+                    << " misses=" << misses;
                 return true;
+            }
         }
-
+        freshenMissCount_ += misses;
+        JLOG(journal_.warn())
+            << "SHAMapStore: freshen END rotation=" << rotationId_.load()
+            << " processed=" << check << " misses=" << misses;
         return false;
     }
 

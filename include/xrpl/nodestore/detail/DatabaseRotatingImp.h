@@ -2,6 +2,8 @@
 
 #include <xrpl/nodestore/DatabaseRotating.h>
 
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 
 namespace xrpl::NodeStore {
@@ -55,10 +57,21 @@ public:
     void
     sync() override;
 
+    std::pair<std::string, std::string>
+    getBackendNames() const override;
+
 private:
     std::shared_ptr<Backend> writableBackend_;
     std::shared_ptr<Backend> archiveBackend_;
     mutable std::mutex mutex_;
+
+    // Race detection for rotation vs. concurrent store/fetch. rotationGen_
+    // is incremented under mutex_ on every swap so a store/fetch that
+    // captured a backend pointer can compare generations before and after
+    // and tell whether the pointer it used is still the current writable.
+    std::atomic<std::uint64_t> rotationGen_{0};
+    std::atomic<std::int64_t> inFlightStores_{0};
+    std::atomic<std::int64_t> inFlightFetches_{0};
 
     std::shared_ptr<NodeObject>
     fetchNodeObject(uint256 const& hash, std::uint32_t, FetchReport& fetchReport, bool duplicate)

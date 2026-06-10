@@ -178,12 +178,12 @@ private:
 
     template <class CacheInstance>
     bool
-    freshenCache(CacheInstance& cache)
+    freshenCache(CacheInstance& cache, char const* cacheName, bool logMisses = true)
     {
         auto const keys = cache.getKeys();
         JLOG(journal_.warn())
             << "SHAMapStore: freshen BEGIN rotation=" << rotationId_.load()
-            << " cacheSize=" << keys.size();
+            << " cache=" << cacheName << " cacheSize=" << keys.size();
 
         std::uint64_t check = 0;
         std::uint64_t misses = 0;
@@ -194,11 +194,12 @@ private:
             if (!obj)
             {
                 ++misses;
-                if (misses <= kMaxLoggedPerRotation)
+                if (logMisses && misses <= kMaxLoggedPerRotation)
                 {
                     JLOG(journal_.warn())
                         << "SHAMapStore: freshen MISS rotation="
-                        << rotationId_.load() << " hash=" << key
+                        << rotationId_.load() << " cache=" << cacheName
+                        << " hash=" << key
                         << " writable=" << writableName_
                         << " archive=" << archiveName_
                         << (misses == kMaxLoggedPerRotation
@@ -212,23 +213,35 @@ private:
             {
                 JLOG(journal_.warn())
                     << "SHAMapStore: freshen PROGRESS rotation="
-                    << rotationId_.load() << " processed=" << check
-                    << " of=" << keys.size() << " misses=" << misses;
+                    << rotationId_.load() << " cache=" << cacheName
+                    << " processed=" << check << " of=" << keys.size()
+                    << " misses=" << misses;
             }
             if (!(check % checkHealthInterval_) && healthWait() == HealthResult::Stopping)
             {
-                freshenMissCount_ += misses;
+                if (logMisses)
+                    freshenMissCount_ += misses;
                 JLOG(journal_.warn())
                     << "SHAMapStore: freshen ABORTED rotation="
-                    << rotationId_.load() << " processed=" << check
-                    << " misses=" << misses;
+                    << rotationId_.load() << " cache=" << cacheName
+                    << " processed=" << check << " misses=" << misses
+                    << (!logMisses
+                            ? " (misses expected for this cache; not counted "
+                              "in freshenMisses)"
+                            : "");
                 return true;
             }
         }
-        freshenMissCount_ += misses;
+        if (logMisses)
+            freshenMissCount_ += misses;
         JLOG(journal_.warn())
             << "SHAMapStore: freshen END rotation=" << rotationId_.load()
-            << " processed=" << check << " misses=" << misses;
+            << " cache=" << cacheName
+            << " processed=" << check << " misses=" << misses
+            << (!logMisses
+                    ? " (misses expected for this cache; not counted in "
+                      "freshenMisses)"
+                    : "");
         return false;
     }
 

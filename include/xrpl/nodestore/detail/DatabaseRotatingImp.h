@@ -73,6 +73,13 @@ private:
     std::atomic<std::int64_t> inFlightStores_{0};
     std::atomic<std::int64_t> inFlightFetches_{0};
 
+    // Per-rotation totals used both as throttle keys and as aggregate
+    // counters reported in the SWAP log line. Reset under mutex_ in rotate().
+    std::atomic<std::uint64_t> storeRaceCount_{0};
+    std::atomic<std::uint64_t> fetchRaceCount_{0};
+    std::atomic<std::uint64_t> fetchMissCount_{0};
+    static constexpr std::uint64_t kMaxLoggedPerRotation = 10;
+
     std::shared_ptr<NodeObject>
     fetchNodeObject(uint256 const& hash, std::uint32_t, FetchReport& fetchReport, bool duplicate)
         override;

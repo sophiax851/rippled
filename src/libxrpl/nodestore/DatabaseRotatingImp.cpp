@@ -77,6 +77,9 @@ DatabaseRotatingImp::rotate(
     std::uint64_t newGen = 0;
     std::int64_t pendingStores = 0;
     std::int64_t pendingFetches = 0;
+    std::uint64_t prevStoreRaces = 0;
+    std::uint64_t prevFetchRaces = 0;
+    std::uint64_t prevFetchMisses = 0;
     {
         std::scoped_lock const lock(mutex_);
 
@@ -95,18 +98,28 @@ DatabaseRotatingImp::rotate(
         newGen = rotationGen_.fetch_add(1, std::memory_order_acq_rel) + 1;
         pendingStores = inFlightStores_.load(std::memory_order_acquire);
         pendingFetches = inFlightFetches_.load(std::memory_order_acquire);
+
+        // Snapshot and reset the per-rotation event counters so the next
+        // window starts clean and the SWAP log line carries the totals
+        // from the window just ended.
+        prevStoreRaces = storeRaceCount_.exchange(0, std::memory_order_acq_rel);
+        prevFetchRaces = fetchRaceCount_.exchange(0, std::memory_order_acq_rel);
+        prevFetchMisses = fetchMissCount_.exchange(0, std::memory_order_acq_rel);
     }
 
-    if (pendingStores > 0 || pendingFetches > 0)
+    if (pendingStores > 0 || pendingFetches > 0 || prevStoreRaces > 0 ||
+        prevFetchRaces > 0 || prevFetchMisses > 0)
     {
         JLOG(j_.warn())
-            << "Rotating: SWAP raced gen=" << newGen
+            << "Rotating: SWAP gen=" << newGen
             << " inFlightStores=" << pendingStores
             << " inFlightFetches=" << pendingFetches
+            << " prevWindowStoreRaces=" << prevStoreRaces
+            << " prevWindowFetchRaces=" << prevFetchRaces
+            << " prevWindowFetchMisses=" << prevFetchMisses
             << " newWritable=" << newWritableBackendName
             << " demotedToArchive=" << newArchiveBackendName
-            << " markedForDelete=" << oldArchiveBackendName
-            << " (in-flight ops captured a now-stale backend pointer)";
+            << " markedForDelete=" << oldArchiveBackendName;
     }
     else
     {
@@ -180,6 +193,7 @@ DatabaseRotatingImp::store(NodeObjectType type, Blob&& data, uint256 const& hash
     if (genAfter != genBefore)
     {
         auto const delta = genAfter - genBefore;
+        auto const n = ++storeRaceCount_;
         // delta == 1 : the write landed in what is now the archive backend.
         //              The node is still on disk and a duplicate=true fetch
         //              will pull it back, but the next rotation will drop
@@ -188,14 +202,23 @@ DatabaseRotatingImp::store(NodeObjectType type, Blob&& data, uint256 const& hash
         //              deletion. As soon as this store() releases its
         //              shared_ptr, the backend destructor will delete the
         //              files. This is silent permanent loss.
-        auto const& strm = (delta >= 2) ? j_.error() : j_.warn();
-        JLOG(strm)
-            << "Rotating: store RACED rotation hash=" << hash
-            << " backend=" << backendName
-            << " genBefore=" << genBefore << " genAfter=" << genAfter
-            << " delta=" << delta
-            << (delta == 1 ? " (wrote into demoted-to-archive backend)"
-                           : " (wrote into backend slated for DELETION)");
+        // delta>=2 always logs (errors are rare and individually critical);
+        // delta==1 is throttled to first kMaxLoggedPerRotation per window.
+        if (delta >= 2 || n <= kMaxLoggedPerRotation)
+        {
+            auto const& strm = (delta >= 2) ? j_.error() : j_.warn();
+            JLOG(strm)
+                << "Rotating: store RACED rotation hash=" << hash
+                << " backend=" << backendName
+                << " genBefore=" << genBefore << " genAfter=" << genAfter
+                << " delta=" << delta
+                << (delta == 1 ? " (wrote into demoted-to-archive backend)"
+                               : " (wrote into backend slated for DELETION)")
+                << (delta == 1 && n == kMaxLoggedPerRotation
+                        ? " (further per-store RACED warns suppressed; see "
+                          "next SWAP for window total)"
+                        : "");
+        }
     }
 }
 
@@ -262,23 +285,25 @@ DatabaseRotatingImp::fetchNodeObject(
 
             // Update writable backend with data from the archive backend
             if (duplicate)
-            {
                 writable->store(nodeObject);
-                JLOG(j_.debug())
-                    << "Rotating: archive->writable copy hash=" << hash
-                    << " writable=" << writable->getName()
-                    << " archive=" << archive->getName();
-            }
         }
         else if (duplicate)
         {
             // duplicate=true means the caller (online-delete copy/freshen)
             // expected to be able to refresh this node into writable. Missing
             // from both backends is the silent-loss signal we want to catch.
-            JLOG(j_.warn())
-                << "Rotating: fetchNodeObject MISS (both backends) hash="
-                << hash << " writable=" << writable->getName()
-                << " archive=" << archive->getName();
+            auto const n = ++fetchMissCount_;
+            if (n <= kMaxLoggedPerRotation)
+            {
+                JLOG(j_.warn())
+                    << "Rotating: fetchNodeObject MISS (both backends) hash="
+                    << hash << " writable=" << writable->getName()
+                    << " archive=" << archive->getName()
+                    << (n == kMaxLoggedPerRotation
+                            ? " (further per-fetch MISS warns suppressed; "
+                              "see next SWAP for window total)"
+                            : "");
+            }
         }
     }
 
@@ -292,12 +317,20 @@ DatabaseRotatingImp::fetchNodeObject(
         // are physically safe (the shared_ptr kept the backend alive),
         // but a MISS here could be a false negative: the node may have
         // landed in the new writable after we captured the old one.
-        JLOG(j_.warn())
-            << "Rotating: fetchNodeObject RACED rotation hash=" << hash
-            << " genBefore=" << genBefore << " genAfter=" << genAfter
-            << " delta=" << (genAfter - genBefore)
-            << " found=" << (nodeObject ? "yes" : "no")
-            << " duplicate=" << (duplicate ? "yes" : "no");
+        auto const n = ++fetchRaceCount_;
+        if (n <= kMaxLoggedPerRotation)
+        {
+            JLOG(j_.warn())
+                << "Rotating: fetchNodeObject RACED rotation hash=" << hash
+                << " genBefore=" << genBefore << " genAfter=" << genAfter
+                << " delta=" << (genAfter - genBefore)
+                << " found=" << (nodeObject ? "yes" : "no")
+                << " duplicate=" << (duplicate ? "yes" : "no")
+                << (n == kMaxLoggedPerRotation
+                        ? " (further per-fetch RACED warns suppressed; "
+                          "see next SWAP for window total)"
+                        : "");
+        }
     }
 
     return nodeObject;

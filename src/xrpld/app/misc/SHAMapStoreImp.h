@@ -58,6 +58,9 @@ private:
     std::uint64_t const checkHealthInterval_ = 1000;
     // emit a progress log line every N records during copy / freshen
     std::uint64_t const progressLogInterval_ = 100000;
+    // cap on per-rotation detailed MISS log lines; aggregate counts are
+    // always reported via the COPY_DONE / FRESHEN_DONE / SWAPPED markers
+    static constexpr std::uint64_t kMaxLoggedPerRotation = 10;
     // minimum # of ledgers to maintain for health of network
     static std::uint32_t const kMinimumDeletionInterval = 256;
     // minimum # of ledgers required for standalone mode.
@@ -191,11 +194,18 @@ private:
             if (!obj)
             {
                 ++misses;
-                JLOG(journal_.warn())
-                    << "SHAMapStore: freshen MISS rotation="
-                    << rotationId_.load() << " hash=" << key
-                    << " writable=" << writableName_
-                    << " archive=" << archiveName_;
+                if (misses <= kMaxLoggedPerRotation)
+                {
+                    JLOG(journal_.warn())
+                        << "SHAMapStore: freshen MISS rotation="
+                        << rotationId_.load() << " hash=" << key
+                        << " writable=" << writableName_
+                        << " archive=" << archiveName_
+                        << (misses == kMaxLoggedPerRotation
+                                ? " (further per-node MISS lines suppressed; "
+                                  "see FRESHEN_DONE for total)"
+                                : "");
+                }
             }
             ++check;
             if ((check % progressLogInterval_) == 0u)

@@ -246,13 +246,20 @@ SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
         // would not be here) but is absent from both writable and archive
         // backends. After this rotation completes the in-memory reference
         // may be released and the node will be unrecoverable.
-        ++copyMissCount_;
-        JLOG(journal_.warn())
-            << "SHAMapStore: copyNode MISS rotation=" << rotationId_.load()
-            << " seq=" << copyingSeq_.load() << " hash=" << hash
-            << " type=" << static_cast<int>(node.getType())
-            << " count=" << nodeCount << " writable=" << writableName_
-            << " archive=" << archiveName_;
+        auto const n = ++copyMissCount_;
+        if (n <= kMaxLoggedPerRotation)
+        {
+            JLOG(journal_.warn())
+                << "SHAMapStore: copyNode MISS rotation=" << rotationId_.load()
+                << " seq=" << copyingSeq_.load() << " hash=" << hash
+                << " type=" << static_cast<int>(node.getType())
+                << " count=" << nodeCount << " writable=" << writableName_
+                << " archive=" << archiveName_
+                << (n == kMaxLoggedPerRotation
+                        ? " (further per-node MISS lines suppressed; "
+                          "see COPY_DONE for total)"
+                        : "");
+        }
     }
 
     ++nodeCount;

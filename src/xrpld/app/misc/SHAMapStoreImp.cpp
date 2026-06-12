@@ -200,8 +200,8 @@ SHAMapStoreImp::SHAMapStoreImp(
     }
 
     bool const isValidator =
-        !app_.config().section(SECTION_VALIDATOR_TOKEN).empty() ||
-        !app_.config().section(SECTION_VALIDATION_SEED).empty();
+        config.exists(SECTION_VALIDATOR_TOKEN) ||
+        config.exists(SECTION_VALIDATION_SEED);
     JLOG(journal_.warn())
         << "SHAMapStore: CONFIG online_delete=" << deleteInterval_
         << " advisory_delete=" << (advisoryDelete_ ? "yes" : "no")

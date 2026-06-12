@@ -81,6 +81,7 @@ InboundLedger::InboundLedger(
           {.jobType = JtLedgerData, .jobName = "InboundLedger", .jobLimit = 5},
           app.getJournal("InboundLedger"))
     , clock_(clock)
+    , startTime_(clock.now())
     , seq_(seq)
     , reason_(reason)
     , peerSet_(std::move(peerSet))
@@ -184,6 +185,14 @@ InboundLedger::~InboundLedger()
                                                     : (std::string("timeouts:") +
                                                        std::to_string(timeouts_) + " "))
                                << stats_.get();
+
+        auto const elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   clock_.now() - startTime_)
+                                   .count();
+        JLOG(journal_.warn())
+            << "InboundLedger: DONE ledgerSeq=" << seq_ << " hash=" << hash_
+            << " complete=no reason=abandoned timeouts=" << timeouts_
+            << " peerCount=" << getPeerCount() << " elapsedMs=" << elapsedMs;
     }
 }
 
@@ -421,6 +430,20 @@ InboundLedger::done()
                                    ? std::string()
                                    : (std::string("timeouts:") + std::to_string(timeouts_) + " "))
                            << stats_.get();
+
+    {
+        auto const elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   clock_.now() - startTime_)
+                                   .count();
+        char const* reason = complete_ ? "acquired"
+            : (timeouts_ >= kLedgerTimeoutRetriesMax) ? "timedOut"
+                                                      : "failed";
+        JLOG(journal_.warn())
+            << "InboundLedger: DONE ledgerSeq=" << seq_ << " hash=" << hash_
+            << " complete=" << (complete_ ? "yes" : "no") << " reason=" << reason
+            << " timeouts=" << timeouts_ << " peerCount=" << getPeerCount()
+            << " elapsedMs=" << elapsedMs;
+    }
 
     XRPL_ASSERT(complete_ || failed_, "xrpl::InboundLedger::done : complete or failed");
 

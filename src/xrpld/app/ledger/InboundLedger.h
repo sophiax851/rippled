@@ -150,6 +150,8 @@ private:
 
     clock_type& clock_;
     clock_type::time_point lastAction_;
+    // Capture of acquisition start for the InboundLedger: DONE summary log.
+    clock_type::time_point const startTime_;
 
     std::shared_ptr<Ledger> ledger_;
     bool haveHeader_{false};

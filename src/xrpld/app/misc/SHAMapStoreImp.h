@@ -176,15 +176,34 @@ private:
     std::unique_ptr<NodeStore::Backend>
     makeBackendRotating(std::string path = std::string());
 
+    // Warn threshold for getKeys(): the call holds the cache mutex, so a slow
+    // walk here blocks every concurrent SHAMap lookup against the same cache.
+    static constexpr std::chrono::milliseconds kGetKeysSlowThresholdMs{500};
+
     template <class CacheInstance>
     bool
     freshenCache(CacheInstance& cache, char const* cacheName, bool logMisses = true)
     {
+        auto const getKeysT0 = std::chrono::steady_clock::now();
         auto const keys = cache.getKeys();
+        auto const getKeysMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - getKeysT0);
         JLOG(journal_.warn())
             << "SHAMapStore: freshen BEGIN rotation=" << rotationId_.load()
-            << " cache=" << cacheName << " cacheSize=" << keys.size();
+            << " cache=" << cacheName << " cacheSize=" << keys.size()
+            << " getKeysMs=" << getKeysMs.count();
+        if (getKeysMs > kGetKeysSlowThresholdMs)
+        {
+            JLOG(journal_.warn())
+                << "SHAMapStore: freshen GETKEYS_SLOW rotation="
+                << rotationId_.load() << " cache=" << cacheName
+                << " getKeysMs=" << getKeysMs.count()
+                << " cacheSize=" << keys.size()
+                << " (cache mutex held this long; lookups on other threads "
+                   "may have blocked)";
+        }
 
+        auto const loopT0 = std::chrono::steady_clock::now();
         std::uint64_t check = 0;
         std::uint64_t misses = 0;
         for (auto const& key : keys)
@@ -221,10 +240,15 @@ private:
             {
                 if (logMisses)
                     freshenMissCount_ += misses;
+                auto const loopMs =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - loopT0);
                 JLOG(journal_.warn())
                     << "SHAMapStore: freshen ABORTED rotation="
                     << rotationId_.load() << " cache=" << cacheName
                     << " processed=" << check << " misses=" << misses
+                    << " loopMs=" << loopMs.count()
+                    << " totalMs=" << (loopMs + getKeysMs).count()
                     << (!logMisses
                             ? " (misses expected for this cache; not counted "
                               "in freshenMisses)"
@@ -234,10 +258,14 @@ private:
         }
         if (logMisses)
             freshenMissCount_ += misses;
+        auto const loopMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - loopT0);
         JLOG(journal_.warn())
             << "SHAMapStore: freshen END rotation=" << rotationId_.load()
             << " cache=" << cacheName
             << " processed=" << check << " misses=" << misses
+            << " loopMs=" << loopMs.count()
+            << " totalMs=" << (loopMs + getKeysMs).count()
             << (!logMisses
                     ? " (misses expected for this cache; not counted in "
                       "freshenMisses)"

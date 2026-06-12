@@ -42,6 +42,45 @@
 #include <vector>
 
 namespace xrpl {
+
+namespace {
+
+// Best-effort backend size for the BACKENDS_BOOT log. Sums sizes of regular
+// files at `path`; handles single-file and directory backends. Errors are
+// swallowed; a return of 0 means "unknown / could not stat".
+std::uintmax_t
+backendSizeBytes(std::string const& path) noexcept
+{
+    try
+    {
+        if (path.empty())
+            return 0;
+        boost::filesystem::path const p(path);
+        if (!boost::filesystem::exists(p))
+            return 0;
+        if (boost::filesystem::is_regular_file(p))
+            return boost::filesystem::file_size(p);
+        if (boost::filesystem::is_directory(p))
+        {
+            std::uintmax_t total = 0;
+            for (boost::filesystem::recursive_directory_iterator it(p), end;
+                 it != end;
+                 ++it)
+            {
+                if (boost::filesystem::is_regular_file(it->status()))
+                    total += boost::filesystem::file_size(it->path());
+            }
+            return total;
+        }
+    }
+    catch (...)
+    {
+    }
+    return 0;
+}
+
+}  // namespace
+
 void
 SHAMapStoreImp::SavedStateDB::init(BasicConfig const& config, std::string const& dbName)
 {
@@ -159,6 +198,20 @@ SHAMapStoreImp::SHAMapStoreImp(
         stateDb_.init(config, dbName_);
         dbPaths();
     }
+
+    bool const isValidator =
+        !app_.config().section(SECTION_VALIDATOR_TOKEN).empty() ||
+        !app_.config().section(SECTION_VALIDATION_SEED).empty();
+    JLOG(journal_.warn())
+        << "SHAMapStore: CONFIG online_delete=" << deleteInterval_
+        << " advisory_delete=" << (advisoryDelete_ ? "yes" : "no")
+        << " ledger_history=" << config.ledgerHistory
+        << " node_size=" << config.nodeSize
+        << " validator=" << (isValidator ? "yes" : "no")
+        << " backend_type=" << get(section, "type")
+        << " backend_path=" << get(section, "path")
+        << " delete_batch=" << deleteBatch_
+        << " age_threshold_s=" << ageThreshold_.count();
 }
 
 std::unique_ptr<NodeStore::Database>
@@ -178,6 +231,13 @@ SHAMapStoreImp::makeNodeStore(int readThreads)
             state.archiveDb = archiveBackend->getName();
             stateDb_.setState(state);
         }
+
+        JLOG(journal_.warn())
+            << "SHAMapStore: BACKENDS_BOOT writable=" << state.writableDb
+            << " writableBytes=" << backendSizeBytes(state.writableDb)
+            << " archive=" << state.archiveDb
+            << " archiveBytes=" << backendSizeBytes(state.archiveDb)
+            << " lastRotated=" << state.lastRotated;
 
         // Create NodeStore with two backends to allow online deletion of
         // data

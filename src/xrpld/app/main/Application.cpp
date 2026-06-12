@@ -45,6 +45,7 @@
 #include <xrpl/basics/Log.h>
 #include <xrpl/basics/MallocTrim.h>
 #include <xrpl/basics/ResolverAsio.h>
+#include <xrpl/basics/StallWatcher.h>
 #include <xrpl/basics/ToString.h>
 #include <xrpl/basics/base_uint.h>
 #include <xrpl/basics/chrono.h>
@@ -274,6 +275,12 @@ public:
 
     IOLatencySampler io_latency_sampler_;
 
+    // Independent watchdog for OS-level scheduling stalls. Fires a warn log
+    // whenever the next tick wakes more than warnThreshold late, capturing
+    // arena-lock holds, mutex contention, paging, and cgroup throttle events
+    // that are otherwise invisible to instrumentation on the blocked path.
+    StallWatcher stallWatcher_;
+
     std::unique_ptr<GRPCServer> grpcServer_;
     // NOLINTEND(readability-identifier-naming)
 
@@ -459,6 +466,10 @@ public:
               logs_->journal("Application"),
               std::chrono::milliseconds(100),
               getIoContext())
+        , stallWatcher_(
+              logs_->journal("StallWatch"),
+              std::chrono::milliseconds{100},
+              std::chrono::milliseconds{5})
         , grpcServer_(std::make_unique<GRPCServer>(*this))
     {
         initAccountIdCache(config_->getValueFor(SizedItem::AccountIdCacheSize));
@@ -1492,6 +1503,7 @@ ApplicationImp::start(bool withTimers)
     }
 
     io_latency_sampler_.start();
+    stallWatcher_.start();
     resolver_->start();
     loadManager_->start();
     shaMapStore_->start();
@@ -1593,6 +1605,8 @@ ApplicationImp::run()
     ledgerCleaner_->stop();
     nodeStore_->stop();
     perfLog_->stop();
+
+    stallWatcher_.stop();
 
     JLOG(journal_.info()) << "Done.";
 }

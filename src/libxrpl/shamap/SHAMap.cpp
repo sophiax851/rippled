@@ -40,6 +40,28 @@
 
 namespace xrpl {
 
+namespace {
+
+// Emit a single warn-level annotation immediately before a SHAMapMissingNode
+// throw so the operator can correlate the symptom (Protocol:WRN Missing Node)
+// with the SHAMap walk that observed the absence.
+inline void
+logSHAMapMissing(
+    beast::Journal const& journal,
+    SHAMapType type,
+    std::uint32_t ledgerSeq,
+    char const* site,
+    std::string const& key)
+{
+    JLOG(journal.warn())
+        << "SHAMap: MISSING_NODE site=" << site
+        << " mapType=" << to_string(type)
+        << " ledgerSeq=" << ledgerSeq
+        << " key=" << key;
+}
+
+}  // namespace
+
 [[nodiscard]] intr_ptr::SharedPtr<SHAMapLeafNode>
 makeTypedLeaf(SHAMapNodeType type, boost::intrusive_ptr<SHAMapItem const> item, std::uint32_t owner)
 {
@@ -275,7 +297,10 @@ SHAMap::fetchNode(SHAMapHash const& hash) const
     auto node = fetchNodeNT(hash);
 
     if (!node)
+    {
+        logSHAMapMissing(journal_, type_, ledgerSeq_, "fetchNode", to_string(hash));
         Throw<SHAMapMissingNode>(type_, hash);
+    }
 
     return node;
 }
@@ -286,7 +311,11 @@ SHAMap::descendThrow(SHAMapInnerNode* parent, int branch) const
     SHAMapTreeNode* ret = descend(parent, branch);  // NOLINT(misc-const-correctness)
 
     if ((ret == nullptr) && !parent->isEmptyBranch(branch))
-        Throw<SHAMapMissingNode>(type_, parent->getChildHash(branch));
+    {
+        auto const childHash = parent->getChildHash(branch);
+        logSHAMapMissing(journal_, type_, ledgerSeq_, "descendThrow*", to_string(childHash));
+        Throw<SHAMapMissingNode>(type_, childHash);
+    }
 
     return ret;
 }
@@ -297,7 +326,11 @@ SHAMap::descendThrow(SHAMapInnerNode& parent, int branch) const
     intr_ptr::SharedPtr<SHAMapTreeNode> ret = descend(parent, branch);
 
     if (!ret && !parent.isEmptyBranch(branch))
-        Throw<SHAMapMissingNode>(type_, parent.getChildHash(branch));
+    {
+        auto const childHash = parent.getChildHash(branch);
+        logSHAMapMissing(journal_, type_, ledgerSeq_, "descendThrow&", to_string(childHash));
+        Throw<SHAMapMissingNode>(type_, childHash);
+    }
 
     return ret;
 }
@@ -571,7 +604,10 @@ SHAMap::peekNextItem(uint256 const& id, SharedPtrNodeStack& stack) const
                 node = descendThrow(*inner, i);
                 auto leaf = firstBelow(node, stack, i);
                 if (leaf == nullptr)
+                {
+                    logSHAMapMissing(journal_, type_, ledgerSeq_, "peekNextItem", to_string(id));
                     Throw<SHAMapMissingNode>(type_, id);
+                }
                 XRPL_ASSERT(leaf->isLeaf(), "xrpl::SHAMap::peekNextItem : leaf is valid");
                 return leaf;
             }
@@ -629,7 +665,10 @@ SHAMap::upperBound(uint256 const& id) const
                     node = descendThrow(*inner, branch);
                     auto leaf = firstBelow(node, stack, branch);
                     if (leaf == nullptr)
+                    {
+                        logSHAMapMissing(journal_, type_, ledgerSeq_, "upperBound", to_string(id));
                         Throw<SHAMapMissingNode>(type_, id);
+                    }
                     return ConstIterator(this, leaf->peekItem().get(), std::move(stack));
                 }
             }
@@ -662,7 +701,10 @@ SHAMap::lowerBound(uint256 const& id) const
                     node = descendThrow(*inner, branch);
                     auto leaf = lastBelow(node, stack, branch);
                     if (leaf == nullptr)
+                    {
+                        logSHAMapMissing(journal_, type_, ledgerSeq_, "lowerBound", to_string(id));
                         Throw<SHAMapMissingNode>(type_, id);
+                    }
                     return ConstIterator(this, leaf->peekItem().get(), std::move(stack));
                 }
             }
@@ -689,7 +731,10 @@ SHAMap::delItem(uint256 const& id)
     walkTowardsKey(id, &stack);
 
     if (stack.empty())
+    {
+        logSHAMapMissing(journal_, type_, ledgerSeq_, "delItem", to_string(id));
         Throw<SHAMapMissingNode>(type_, id);
+    }
 
     auto leaf = intr_ptr::dynamicPointerCast<SHAMapLeafNode>(stack.top().first);
     stack.pop();
@@ -777,7 +822,10 @@ SHAMap::addGiveItem(SHAMapNodeType type, boost::intrusive_ptr<SHAMapItem const> 
     walkTowardsKey(tag, &stack);
 
     if (stack.empty())
+    {
+        logSHAMapMissing(journal_, type_, ledgerSeq_, "addGiveItem", to_string(tag));
         Throw<SHAMapMissingNode>(type_, tag);
+    }
 
     auto [node, nodeID] = stack.top();
     stack.pop();
@@ -863,7 +911,10 @@ SHAMap::updateGiveItem(SHAMapNodeType type, boost::intrusive_ptr<SHAMapItem cons
     walkTowardsKey(tag, &stack);
 
     if (stack.empty())
+    {
+        logSHAMapMissing(journal_, type_, ledgerSeq_, "updateGiveItem", to_string(tag));
         Throw<SHAMapMissingNode>(type_, tag);
+    }
 
     auto node = intr_ptr::dynamicPointerCast<SHAMapLeafNode>(stack.top().first);
     auto nodeID = stack.top().second;

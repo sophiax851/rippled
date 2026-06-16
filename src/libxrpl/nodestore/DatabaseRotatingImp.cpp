@@ -14,10 +14,12 @@
 #include <xrpl/nodestore/Types.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -42,6 +44,25 @@ struct InFlightGuard
     InFlightGuard&
     operator=(InFlightGuard const&) = delete;
 };
+
+// Debug instrumentation: when RIPPLED_TRACE_NODE_HASH is set to a node hash,
+// the online-delete copy/freshen path emits targeted debug lines for that one
+// node so a specific copy-forward durability gap can be traced. Unset (the
+// default) makes every probe a single optional test on the hot path.
+std::optional<uint256> const&
+traceNodeHash()
+{
+    static std::optional<uint256> const h = []() -> std::optional<uint256> {
+        if (char const* e = std::getenv("RIPPLED_TRACE_NODE_HASH"))
+        {
+            uint256 u;
+            if (u.parseHex(e))
+                return u;
+        }
+        return std::nullopt;
+    }();
+    return h;
+}
 }  // namespace
 
 DatabaseRotatingImp::DatabaseRotatingImp(
@@ -231,6 +252,7 @@ DatabaseRotatingImp::fetchNodeObject(
 {
     InFlightGuard const ifg(inFlightFetches_);
     auto const genBefore = rotationGen_.load(std::memory_order_acquire);
+    auto const& traceTarget = traceNodeHash();
 
     auto fetch = [&](std::shared_ptr<Backend> const& backend) {
         Status status = Status::Ok;
@@ -271,12 +293,14 @@ DatabaseRotatingImp::fetchNodeObject(
 
     // Try to fetch from the writable backend
     nodeObject = fetch(writable);
+    bool foundInArchive = false;
     if (!nodeObject)
     {
         // Otherwise try to fetch from the archive backend
         nodeObject = fetch(archive);
         if (nodeObject)
         {
+            foundInArchive = true;
             {
                 // Refresh the writable backend pointer
                 std::scoped_lock const lock(mutex_);
@@ -285,7 +309,23 @@ DatabaseRotatingImp::fetchNodeObject(
 
             // Update writable backend with data from the archive backend
             if (duplicate)
+            {
                 writable->store(nodeObject);
+
+                // Target-gated copy-forward durability probe: confirm the
+                // node just restored is immediately readable from the
+                // writable backend it was stored into.
+                if (traceTarget && hash == *traceTarget)
+                {
+                    std::shared_ptr<NodeObject> readBack;
+                    auto const st = writable->fetch(hash, &readBack);
+                    JLOG(j_.debug())
+                        << "Rotating: TRACE verify-after-store hash=" << hash
+                        << " writable=" << writable->getName()
+                        << " readBack=" << (readBack ? "ok" : "MISSING")
+                        << " status=" << static_cast<int>(st);
+                }
+            }
         }
         else if (duplicate)
         {
@@ -305,6 +345,18 @@ DatabaseRotatingImp::fetchNodeObject(
                             : "");
             }
         }
+    }
+
+    // Target-gated location probe: record which backend served the target
+    // node (or none) for copy/freshen (duplicate=true) and normal reads.
+    if (traceTarget && hash == *traceTarget)
+    {
+        JLOG(j_.debug())
+            << "Rotating: TRACE fetchNodeObject hash=" << hash
+            << " duplicate=" << (duplicate ? "yes" : "no") << " foundIn="
+            << (nodeObject ? (foundInArchive ? "archive" : "writable") : "none")
+            << " writable=" << writable->getName()
+            << " archive=" << archive->getName();
     }
 
     if (nodeObject)

@@ -9,6 +9,7 @@
 #include <xrpl/basics/BasicConfig.h>
 #include <xrpl/basics/ByteUtilities.h>
 #include <xrpl/basics/Log.h>
+#include <xrpl/basics/base_uint.h>
 #include <xrpl/basics/contract.h>
 #include <xrpl/beast/core/CurrentThreadName.h>
 #include <xrpl/beast/utility/Journal.h>
@@ -30,6 +31,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -44,6 +46,25 @@
 namespace xrpl {
 
 namespace {
+
+// Debug instrumentation: when RIPPLED_TRACE_NODE_HASH is set to a node hash,
+// the online-delete copy path emits a targeted debug line for that one node so
+// a specific copy-forward durability gap can be traced. Unset (the default)
+// makes the probe a single optional test on the hot path.
+std::optional<uint256> const&
+traceNodeHash()
+{
+    static std::optional<uint256> const h = []() -> std::optional<uint256> {
+        if (char const* e = std::getenv("RIPPLED_TRACE_NODE_HASH"))
+        {
+            uint256 u;
+            if (u.parseHex(e))
+                return u;
+        }
+        return std::nullopt;
+    }();
+    return h;
+}
 
 // Best-effort backend size for the BACKENDS_BOOT log. Sums sizes of regular
 // files at `path`; handles single-file and directory backends. Errors are
@@ -299,6 +320,16 @@ SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
     auto const hash = node.getHash().asUInt256();
     auto const obj = dbRotating_->fetchNodeObject(
         hash, 0, NodeStore::FetchType::Synchronous, true);
+
+    if (auto const& t = traceNodeHash(); t && hash == *t)
+    {
+        JLOG(journal_.debug())
+            << "SHAMapStore: TRACE copyNode rotation=" << rotationId_.load()
+            << " seq=" << copyingSeq_.load() << " hash=" << hash
+            << " found=" << (obj ? "yes" : "no")
+            << " type=" << static_cast<int>(node.getType())
+            << " writable=" << writableName_ << " archive=" << archiveName_;
+    }
 
     if (!obj)
     {

@@ -312,18 +312,29 @@ DatabaseRotatingImp::fetchNodeObject(
             {
                 writable->store(nodeObject);
 
-                // Target-gated copy-forward durability probe: confirm the
-                // node just restored is immediately readable from the
-                // writable backend it was stored into.
-                if (traceTarget && hash == *traceTarget)
+                // Always-on copy-forward durability check: a node just
+                // restored from the archive must be immediately readable from
+                // the writable it was stored into. This runs only on the
+                // archive-hit path (the only place a copy-forward store
+                // happens) and logs only on failure, so steady-state volume is
+                // zero. It catches the silent copy-forward gap for ANY node,
+                // with no need to know the hash in advance.
+                std::shared_ptr<NodeObject> readBack;
+                auto const st = writable->fetch(hash, &readBack);
+                if (!readBack)
                 {
-                    std::shared_ptr<NodeObject> readBack;
-                    auto const st = writable->fetch(hash, &readBack);
+                    JLOG(j_.error())
+                        << "Rotating: verify-after-store FAILED hash=" << hash
+                        << " writable=" << writable->getName()
+                        << " status=" << static_cast<int>(st)
+                        << " (copy-forward store not immediately readable)";
+                }
+                else if (traceTarget && hash == *traceTarget)
+                {
                     JLOG(j_.debug())
                         << "Rotating: TRACE verify-after-store hash=" << hash
                         << " writable=" << writable->getName()
-                        << " readBack=" << (readBack ? "ok" : "MISSING")
-                        << " status=" << static_cast<int>(st);
+                        << " readBack=ok status=" << static_cast<int>(st);
                 }
             }
         }

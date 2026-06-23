@@ -344,6 +344,8 @@ SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
                 << "SHAMapStore: copyNode MISS rotation=" << rotationId_.load()
                 << " seq=" << copyingSeq_.load() << " hash=" << hash
                 << " type=" << static_cast<int>(node.getType())
+                << " inner=" << (node.isInner() ? 1 : 0)
+                << " cowid=" << node.cowid()
                 << " count=" << nodeCount << " writable=" << writableName_
                 << " archive=" << archiveName_
                 << (n == kMaxLoggedPerRotation

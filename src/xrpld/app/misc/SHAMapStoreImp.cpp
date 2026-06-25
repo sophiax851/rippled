@@ -21,6 +21,7 @@
 #include <xrpl/protocol/Protocol.h>
 #include <xrpl/server/NetworkOPs.h>
 #include <xrpl/server/State.h>
+#include <xrpl/shamap/SHAMapInnerNode.h>
 #include <xrpl/shamap/SHAMapMissingNode.h>
 #include <xrpl/shamap/SHAMapTreeNode.h>
 
@@ -340,6 +341,22 @@ SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
         auto const n = ++copyMissCount_;
         if (n <= kMaxLoggedPerRotation)
         {
+            // For an inner node, summarize the surviving children. Structural
+            // reversion (a transient child added then deleted while stable,
+            // on-disk siblings are untouched) recombines an inner node off
+            // disk: the listed child hashes should still resolve on disk.
+            std::string childInfo;
+            if (node.isInner())
+            {
+                auto const& inner = static_cast<SHAMapInnerNode const&>(node);
+                childInfo = " branches=" + std::to_string(inner.getBranchCount());
+                for (int i = 0; i < SHAMapInnerNode::kBranchFactor; ++i)
+                {
+                    if (!inner.isEmptyBranch(i))
+                        childInfo += " b" + std::to_string(i) + "=" +
+                            to_string(inner.getChildHash(i));
+                }
+            }
             JLOG(journal_.warn())
                 << "SHAMapStore: copyNode MISS rotation=" << rotationId_.load()
                 << " seq=" << copyingSeq_.load() << " hash=" << hash
@@ -347,7 +364,7 @@ SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
                 << " inner=" << (node.isInner() ? 1 : 0)
                 << " cowid=" << node.cowid()
                 << " count=" << nodeCount << " writable=" << writableName_
-                << " archive=" << archiveName_
+                << " archive=" << archiveName_ << childInfo
                 << (n == kMaxLoggedPerRotation
                         ? " (further per-node MISS lines suppressed; "
                           "see COPY_DONE for total)"

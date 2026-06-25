@@ -180,6 +180,12 @@ private:
     // walk here blocks every concurrent SHAMap lookup against the same cache.
     static constexpr std::chrono::milliseconds kGetKeysSlowThresholdMs{500};
 
+    // logMisses marks a cache whose nodes live in the nodestore (TreeNodeCache):
+    // misses are durability-relevant, so they are logged, counted in
+    // freshenMisses, and the fetch requests copy-forward (duplicate=true). The
+    // MasterTransactionCache passes logMisses=false: its tx nodes are absent
+    // from the nodestore by design, so it must not log, count, request
+    // copy-forward, nor inflate the backend fetchMissCount_.
     template <class CacheInstance>
     bool
     freshenCache(CacheInstance& cache, char const* cacheName, bool logMisses = true)
@@ -208,8 +214,10 @@ private:
         std::uint64_t misses = 0;
         for (auto const& key : keys)
         {
+            // duplicate (copy-forward + backend miss-count) only for caches
+            // whose nodes belong in the nodestore; see logMisses note above.
             auto const obj = dbRotating_->fetchNodeObject(
-                key, 0, NodeStore::FetchType::Synchronous, true);
+                key, 0, NodeStore::FetchType::Synchronous, logMisses);
             if (!obj)
             {
                 ++misses;

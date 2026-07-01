@@ -15,6 +15,7 @@
 namespace xrpl {
 
 class NetworkOPs;
+class SHAMapNodeID;
 
 class SHAMapStoreImp : public SHAMapStore
 {
@@ -167,7 +168,10 @@ public:
 private:
     // callback for visitNodes
     bool
-    copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node);
+    copyNode(
+        std::uint64_t& nodeCount,
+        SHAMapTreeNode const& node,
+        SHAMapNodeID const& nodeID);
     void
     run();
     void

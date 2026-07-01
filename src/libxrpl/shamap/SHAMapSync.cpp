@@ -106,6 +106,76 @@ SHAMap::visitNodes(std::function<bool(SHAMapTreeNode&)> const& function) const
 }
 
 void
+SHAMap::visitNodes(
+    std::function<bool(SHAMapTreeNode&, SHAMapNodeID const&)> const& function)
+    const
+{
+    if (!root_)
+        return;
+
+    SHAMapNodeID nodeID;  // root is depth 0
+
+    function(*root_, nodeID);
+
+    if (!root_->isInner())
+        return;
+
+    using StackEntry =
+        std::tuple<int, SHAMapNodeID, intr_ptr::SharedPtr<SHAMapInnerNode>>;
+    std::stack<StackEntry, std::vector<StackEntry>> stack;
+
+    auto node = intr_ptr::staticPointerCast<SHAMapInnerNode>(root_);
+    int pos = 0;
+
+    while (true)
+    {
+        while (pos < 16)
+        {
+            if (!node->isEmptyBranch(pos))
+            {
+                intr_ptr::SharedPtr<SHAMapTreeNode> const child =
+                    descendNoStore(*node, pos);
+                SHAMapNodeID const childID = nodeID.getChildNodeID(pos);
+                if (!function(*child, childID))
+                    return;
+
+                if (child->isLeaf())
+                {
+                    ++pos;
+                }
+                else
+                {
+                    // If there are no more children, don't push this node
+                    while ((pos != 15) && (node->isEmptyBranch(pos + 1)))
+                        ++pos;
+
+                    if (pos != 15)
+                    {
+                        // save next position to resume at
+                        stack.emplace(pos + 1, nodeID, std::move(node));
+                    }
+
+                    // descend to the child's first position
+                    node = intr_ptr::staticPointerCast<SHAMapInnerNode>(child);
+                    nodeID = childID;
+                    pos = 0;
+                }
+            }
+            else
+            {
+                ++pos;  // move to next position
+            }
+        }
+
+        if (stack.empty())
+            break;
+
+        std::tie(pos, nodeID, node) = stack.top();
+        stack.pop();
+    }
+}
+
+void
 SHAMap::visitDifferences(
     SHAMap const* have,
     std::function<bool(SHAMapTreeNode const&)> const& function) const

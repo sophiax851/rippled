@@ -219,6 +219,16 @@ public:
     void
     visitNodes(std::function<bool(SHAMapTreeNode&)> const& function) const;
 
+    /**  Visit every node in this SHAMap, threading each node's SHAMapNodeID.
+
+         @param function called with every node visited and its node id (the
+         root is depth 0). If function returns false, visitNodes exits.
+    */
+    void
+    visitNodes(
+        std::function<bool(SHAMapTreeNode&, SHAMapNodeID const&)> const&
+            function) const;
+
     /**  Visit every node in this SHAMap that
          is not present in the specified SHAMap
 

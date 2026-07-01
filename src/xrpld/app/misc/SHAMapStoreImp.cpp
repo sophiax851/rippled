@@ -23,6 +23,7 @@
 #include <xrpl/server/State.h>
 #include <xrpl/shamap/SHAMapInnerNode.h>
 #include <xrpl/shamap/SHAMapMissingNode.h>
+#include <xrpl/shamap/SHAMapNodeID.h>
 #include <xrpl/shamap/SHAMapTreeNode.h>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -315,7 +316,10 @@ SHAMapStoreImp::fdRequired() const
 }
 
 bool
-SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
+SHAMapStoreImp::copyNode(
+    std::uint64_t& nodeCount,
+    SHAMapTreeNode const& node,
+    SHAMapNodeID const& nodeID)
 {
     // Copy a single record from node to dbRotating_
     auto const hash = node.getHash().asUInt256();
@@ -363,7 +367,8 @@ SHAMapStoreImp::copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node)
                 << " type=" << static_cast<int>(node.getType())
                 << " inner=" << (node.isInner() ? 1 : 0)
                 << " cowid=" << node.cowid()
-                << " count=" << nodeCount << " writable=" << writableName_
+                << " count=" << nodeCount << " depth=" << nodeID.getDepth()
+                << " writable=" << writableName_
                 << " archive=" << archiveName_ << childInfo
                 << (n == kMaxLoggedPerRotation
                         ? " (further per-node MISS lines suppressed; "
@@ -476,7 +481,8 @@ SHAMapStoreImp::run()
                         &SHAMapStoreImp::copyNode,
                         this,
                         std::ref(nodeCount),
-                        std::placeholders::_1));
+                        std::placeholders::_1,
+                        std::placeholders::_2));
             }
             catch (SHAMapMissingNode const& e)
             {

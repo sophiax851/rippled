@@ -177,6 +177,13 @@ private:
     void
     dbPaths();
 
+    // Debug/observability only: snapshot of the richer sync-state signals at the
+    // rotation site. Used to check whether the "state full" label matches the
+    // node's actual ledger completeness (needNetworkLedger / caughtUp /
+    // complete-ledger range) when a missing node aborts the copy.
+    std::string
+    syncStateString();
+
     std::unique_ptr<NodeStore::Backend>
     makeBackendRotating(std::string path = std::string());
 

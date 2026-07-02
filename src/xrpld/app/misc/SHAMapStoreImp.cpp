@@ -38,6 +38,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -394,6 +395,37 @@ SHAMapStoreImp::copyNode(
     return true;
 }
 
+std::string
+SHAMapStoreImp::syncStateString()
+{
+    // Completeness signals that can contradict a stale "state full" label:
+    //   needNetworkLedger  - server still believes it lacks a network ledger
+    //   isFull/blocked/*   - consensus-participation view of health
+    //   caughtUp (+reason) - LedgerMaster's own not-in-sync explanation
+    //   fullRange/complete - the ledger ranges actually present on disk
+    OperatingMode const mode = netOPs_->getOperatingMode();
+    std::string caughtUpReason;
+    bool const caughtUp = ledgerMaster_->isCaughtUp(caughtUpReason);
+    std::uint32_t fullMin = 0, fullMax = 0;
+    bool const haveFull = ledgerMaster_->getFullValidatedRange(fullMin, fullMax);
+
+    std::ostringstream ss;
+    ss << "mode=" << netOPs_->strOperatingMode(mode, false)
+       << " needNetworkLedger=" << netOPs_->isNeedNetworkLedger()
+       << " isFull=" << netOPs_->isFull() << " blocked=" << netOPs_->isBlocked()
+       << " amendmentBlocked=" << netOPs_->isAmendmentBlocked()
+       << " unlBlocked=" << netOPs_->isUNLBlocked()
+       << " validIndex=" << ledgerMaster_->getValidLedgerIndex()
+       << " validatedAge=" << ledgerMaster_->getValidatedLedgerAge().count()
+       << 's' << " publishedAge=" << ledgerMaster_->getPublishedLedgerAge().count()
+       << 's' << " caughtUp=" << caughtUp << " fullRange="
+       << (haveFull ? std::to_string(fullMin) + "-" + std::to_string(fullMax)
+                    : "none")
+       << " complete=" << ledgerMaster_->getCompleteLedgers()
+       << " caughtUpReason=\"" << caughtUpReason << '"';
+    return ss.str();
+}
+
 void
 SHAMapStoreImp::run()
 {
@@ -467,6 +499,10 @@ SHAMapStoreImp::run()
                                   << app_.getOPs().strOperatingMode(false) << " age "
                                   << ledgerMaster_->getValidatedLedgerAge().count() << 's';
 
+            JLOG(journal_.warn())
+                << "SHAMapStore: rotation SYNCSTATE id=" << rot
+                << " seq=" << validatedSeq << ' ' << syncStateString();
+
             clearPrior(lastRotated);
             if (healthWait() == HealthResult::Stopping)
                 return;
@@ -486,6 +522,10 @@ SHAMapStoreImp::run()
             }
             catch (SHAMapMissingNode const& e)
             {
+                JLOG(journal_.warn())
+                    << "SHAMapStore: rotation MISS_SYNCSTATE id=" << rot
+                    << " seq=" << validatedSeq << ' ' << syncStateString()
+                    << " error=\"" << e.what() << '"';
                 JLOG(journal_.error())
                     << "Missing node while copying ledger before rotate: " << e.what();
                 continue;

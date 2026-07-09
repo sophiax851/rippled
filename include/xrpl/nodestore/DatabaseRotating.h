@@ -37,6 +37,19 @@ public:
     /** Returns the current (writable, archive) backend names under lock. */
     virtual std::pair<std::string, std::string>
     getBackendNames() const = 0;
+
+    /** Marks a rotation as in flight (or finished).
+
+        While set, an ordinary (duplicate=false) fetch that is served by the
+        archive backend is also stored into the writable backend. The archive
+        is about to be deleted; without this, a node body read from it after
+        online delete's cache-freshen snapshot would survive only in RAM and
+        lose its last disk copy at the swap. Set by SHAMapStore just before
+        freshening caches and cleared once rotate() completes (or the
+        rotation aborts).
+    */
+    virtual void
+    setRotationInFlight(bool inFlight) = 0;
 };
 
 }  // namespace xrpl::NodeStore

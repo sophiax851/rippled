@@ -16,9 +16,11 @@
 #include <xrpl/beast/utility/instrumentation.h>
 #include <xrpl/ledger/Ledger.h>
 #include <xrpl/nodestore/Database.h>
+#include <xrpl/nodestore/NodeObject.h>
 #include <xrpl/nodestore/Scheduler.h>
 #include <xrpl/nodestore/detail/DatabaseRotatingImp.h>
 #include <xrpl/protocol/Protocol.h>
+#include <xrpl/protocol/Serializer.h>
 #include <xrpl/server/NetworkOPs.h>
 #include <xrpl/server/State.h>
 #include <xrpl/shamap/SHAMapInnerNode.h>
@@ -38,8 +40,8 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -87,9 +89,7 @@ backendSizeBytes(std::string const& path) noexcept
         if (boost::filesystem::is_directory(p))
         {
             std::uintmax_t total = 0;
-            for (boost::filesystem::recursive_directory_iterator it(p), end;
-                 it != end;
-                 ++it)
+            for (boost::filesystem::recursive_directory_iterator it(p), end; it != end; ++it)
             {
                 if (boost::filesystem::is_regular_file(it->status()))
                     total += boost::filesystem::file_size(it->path());
@@ -224,18 +224,16 @@ SHAMapStoreImp::SHAMapStoreImp(
     }
 
     bool const isValidator =
-        config.exists(SECTION_VALIDATOR_TOKEN) ||
-        config.exists(SECTION_VALIDATION_SEED);
-    JLOG(journal_.warn())
-        << "SHAMapStore: CONFIG online_delete=" << deleteInterval_
-        << " advisory_delete=" << (advisoryDelete_ ? "yes" : "no")
-        << " ledger_history=" << config.ledgerHistory
-        << " node_size=" << config.nodeSize
-        << " validator=" << (isValidator ? "yes" : "no")
-        << " backend_type=" << get(section, "type")
-        << " backend_path=" << get(section, "path")
-        << " delete_batch=" << deleteBatch_
-        << " age_threshold_s=" << ageThreshold_.count();
+        config.exists(SECTION_VALIDATOR_TOKEN) || config.exists(SECTION_VALIDATION_SEED);
+    JLOG(journal_.warn()) << "SHAMapStore: CONFIG online_delete=" << deleteInterval_
+                          << " advisory_delete=" << (advisoryDelete_ ? "yes" : "no")
+                          << " ledger_history=" << config.ledgerHistory
+                          << " node_size=" << config.nodeSize
+                          << " validator=" << (isValidator ? "yes" : "no")
+                          << " backend_type=" << get(section, "type")
+                          << " backend_path=" << get(section, "path")
+                          << " delete_batch=" << deleteBatch_
+                          << " age_threshold_s=" << ageThreshold_.count();
 }
 
 std::unique_ptr<NodeStore::Database>
@@ -256,12 +254,11 @@ SHAMapStoreImp::makeNodeStore(int readThreads)
             stateDb_.setState(state);
         }
 
-        JLOG(journal_.warn())
-            << "SHAMapStore: BACKENDS_BOOT writable=" << state.writableDb
-            << " writableBytes=" << backendSizeBytes(state.writableDb)
-            << " archive=" << state.archiveDb
-            << " archiveBytes=" << backendSizeBytes(state.archiveDb)
-            << " lastRotated=" << state.lastRotated;
+        JLOG(journal_.warn()) << "SHAMapStore: BACKENDS_BOOT writable=" << state.writableDb
+                              << " writableBytes=" << backendSizeBytes(state.writableDb)
+                              << " archive=" << state.archiveDb
+                              << " archiveBytes=" << backendSizeBytes(state.archiveDb)
+                              << " lastRotated=" << state.lastRotated;
 
         // Create NodeStore with two backends to allow online deletion of
         // data
@@ -324,17 +321,15 @@ SHAMapStoreImp::copyNode(
 {
     // Copy a single record from node to dbRotating_
     auto const hash = node.getHash().asUInt256();
-    auto const obj = dbRotating_->fetchNodeObject(
-        hash, 0, NodeStore::FetchType::Synchronous, true);
+    auto const obj = dbRotating_->fetchNodeObject(hash, 0, NodeStore::FetchType::Synchronous, true);
 
     if (auto const& t = traceNodeHash(); t && hash == *t)
     {
-        JLOG(journal_.debug())
-            << "SHAMapStore: TRACE copyNode rotation=" << rotationId_.load()
-            << " seq=" << copyingSeq_.load() << " hash=" << hash
-            << " found=" << (obj ? "yes" : "no")
-            << " type=" << static_cast<int>(node.getType())
-            << " writable=" << writableName_ << " archive=" << archiveName_;
+        JLOG(journal_.debug()) << "SHAMapStore: TRACE copyNode rotation=" << rotationId_.load()
+                               << " seq=" << copyingSeq_.load() << " hash=" << hash
+                               << " found=" << (obj ? "yes" : "no")
+                               << " type=" << static_cast<int>(node.getType())
+                               << " writable=" << writableName_ << " archive=" << archiveName_;
     }
 
     if (!obj)
@@ -358,33 +353,47 @@ SHAMapStoreImp::copyNode(
                 for (int i = 0; i < SHAMapInnerNode::kBranchFactor; ++i)
                 {
                     if (!inner.isEmptyBranch(i))
-                        childInfo += " b" + std::to_string(i) + "=" +
-                            to_string(inner.getChildHash(i));
+                        childInfo +=
+                            " b" + std::to_string(i) + "=" + to_string(inner.getChildHash(i));
                 }
             }
-            JLOG(journal_.warn())
-                << "SHAMapStore: copyNode MISS rotation=" << rotationId_.load()
-                << " seq=" << copyingSeq_.load() << " hash=" << hash
-                << " type=" << static_cast<int>(node.getType())
-                << " inner=" << (node.isInner() ? 1 : 0)
-                << " cowid=" << node.cowid()
-                << " count=" << nodeCount << " depth=" << nodeID.getDepth()
-                << " writable=" << writableName_
-                << " archive=" << archiveName_ << childInfo
-                << (n == kMaxLoggedPerRotation
-                        ? " (further per-node MISS lines suppressed; "
-                          "see COPY_DONE for total)"
-                        : "");
+            JLOG(journal_.warn()) << "SHAMapStore: copyNode MISS rotation=" << rotationId_.load()
+                                  << " seq=" << copyingSeq_.load() << " hash=" << hash
+                                  << " type=" << static_cast<int>(node.getType())
+                                  << " inner=" << (node.isInner() ? 1 : 0)
+                                  << " cowid=" << node.cowid() << " count=" << nodeCount
+                                  << " depth=" << nodeID.getDepth() << " writable=" << writableName_
+                                  << " archive=" << archiveName_ << childInfo
+                                  << (n == kMaxLoggedPerRotation
+                                          ? " (further per-node MISS lines suppressed; "
+                                            "see COPY_DONE for total)"
+                                          : "");
+        }
+
+        // Fix ported from fix/rotation-missing-node: the in-memory body is
+        // in hand right here, so persist it directly into the writable
+        // backend. It is clean (cowid == 0, flushDirty skips it) and its
+        // only on-disk copy was dropped by an earlier rotation; without
+        // this re-store it would later surface as an unresolvable
+        // SHAMapMissingNode.
+        Serializer s;
+        node.serializeWithPrefix(s);
+        dbRotating_->store(NodeObjectType::AccountNode, std::move(s.modData()), hash, 0);
+        if (n <= kMaxLoggedPerRotation)
+        {
+            JLOG(journal_.warn()) << "SHAMapStore: copyNode RESTORED rotation="
+                                  << rotationId_.load() << " seq=" << copyingSeq_.load()
+                                  << " hash=" << hash
+                                  << " type=" << static_cast<int>(node.getType());
         }
     }
 
     ++nodeCount;
     if ((nodeCount % progressLogInterval_) == 0u)
     {
-        JLOG(journal_.warn())
-            << "SHAMapStore: copyNode PROGRESS rotation=" << rotationId_.load()
-            << " seq=" << copyingSeq_.load() << " processed=" << nodeCount
-            << " copyMisses=" << copyMissCount_.load();
+        JLOG(journal_.warn()) << "SHAMapStore: copyNode PROGRESS rotation=" << rotationId_.load()
+                              << " seq=" << copyingSeq_.load() << " processed=" << nodeCount
+                              << " copyMisses=" << copyMissCount_.load();
     }
     if ((nodeCount % checkHealthInterval_) == 0u)
     {
@@ -411,18 +420,17 @@ SHAMapStoreImp::syncStateString()
 
     std::ostringstream ss;
     ss << "mode=" << netOPs_->strOperatingMode(mode, false)
-       << " needNetworkLedger=" << netOPs_->isNeedNetworkLedger()
-       << " isFull=" << netOPs_->isFull() << " blocked=" << netOPs_->isBlocked()
+       << " needNetworkLedger=" << netOPs_->isNeedNetworkLedger() << " isFull=" << netOPs_->isFull()
+       << " blocked=" << netOPs_->isBlocked()
        << " amendmentBlocked=" << netOPs_->isAmendmentBlocked()
        << " unlBlocked=" << netOPs_->isUNLBlocked()
        << " validIndex=" << ledgerMaster_->getValidLedgerIndex()
-       << " validatedAge=" << ledgerMaster_->getValidatedLedgerAge().count()
-       << 's' << " publishedAge=" << ledgerMaster_->getPublishedLedgerAge().count()
-       << 's' << " caughtUp=" << caughtUp << " fullRange="
-       << (haveFull ? std::to_string(fullMin) + "-" + std::to_string(fullMax)
-                    : "none")
-       << " complete=" << ledgerMaster_->getCompleteLedgers()
-       << " caughtUpReason=\"" << caughtUpReason << '"';
+       << " validatedAge=" << ledgerMaster_->getValidatedLedgerAge().count() << 's'
+       << " publishedAge=" << ledgerMaster_->getPublishedLedgerAge().count() << 's'
+       << " caughtUp=" << caughtUp << " fullRange="
+       << (haveFull ? std::to_string(fullMin) + "-" + std::to_string(fullMax) : "none")
+       << " complete=" << ledgerMaster_->getCompleteLedgers() << " caughtUpReason=\""
+       << caughtUpReason << '"';
     return ss.str();
 }
 
@@ -484,14 +492,12 @@ SHAMapStoreImp::run()
                 archiveName_ = names.second;
             }
 
-            JLOG(journal_.warn())
-                << "SHAMapStore: rotation BEGIN id=" << rot
-                << " validatedSeq=" << validatedSeq
-                << " lastRotated=" << lastRotated
-                << " deleteInterval=" << deleteInterval_
-                << " canDelete=" << canDelete_
-                << " writable=" << writableName_
-                << " archive=" << archiveName_;
+            JLOG(journal_.warn()) << "SHAMapStore: rotation BEGIN id=" << rot
+                                  << " validatedSeq=" << validatedSeq
+                                  << " lastRotated=" << lastRotated
+                                  << " deleteInterval=" << deleteInterval_
+                                  << " canDelete=" << canDelete_ << " writable=" << writableName_
+                                  << " archive=" << archiveName_;
 
             JLOG(journal_.warn()) << "rotating  validatedSeq " << validatedSeq << " lastRotated "
                                   << lastRotated << " deleteInterval " << deleteInterval_
@@ -499,9 +505,8 @@ SHAMapStoreImp::run()
                                   << app_.getOPs().strOperatingMode(false) << " age "
                                   << ledgerMaster_->getValidatedLedgerAge().count() << 's';
 
-            JLOG(journal_.warn())
-                << "SHAMapStore: rotation SYNCSTATE id=" << rot
-                << " seq=" << validatedSeq << ' ' << syncStateString();
+            JLOG(journal_.warn()) << "SHAMapStore: rotation SYNCSTATE id=" << rot
+                                  << " seq=" << validatedSeq << ' ' << syncStateString();
 
             clearPrior(lastRotated);
             if (healthWait() == HealthResult::Stopping)
@@ -523,9 +528,8 @@ SHAMapStoreImp::run()
             catch (SHAMapMissingNode const& e)
             {
                 JLOG(journal_.warn())
-                    << "SHAMapStore: rotation MISS_SYNCSTATE id=" << rot
-                    << " seq=" << validatedSeq << ' ' << syncStateString()
-                    << " error=\"" << e.what() << '"';
+                    << "SHAMapStore: rotation MISS_SYNCSTATE id=" << rot << " seq=" << validatedSeq
+                    << ' ' << syncStateString() << " error=\"" << e.what() << '"';
                 JLOG(journal_.error())
                     << "Missing node while copying ledger before rotate: " << e.what();
                 continue;
@@ -536,10 +540,26 @@ SHAMapStoreImp::run()
             // Only log if we completed without a "health" abort
             JLOG(journal_.debug())
                 << "copied ledger " << validatedSeq << " nodecount " << nodeCount;
-            JLOG(journal_.warn())
-                << "SHAMapStore: rotation COPY_DONE id=" << rot
-                << " seq=" << validatedSeq << " nodeCount=" << nodeCount
-                << " copyMisses=" << copyMissCount_.load();
+            JLOG(journal_.warn()) << "SHAMapStore: rotation COPY_DONE id=" << rot
+                                  << " seq=" << validatedSeq << " nodeCount=" << nodeCount
+                                  << " copyMisses=" << copyMissCount_.load();
+
+            // Close the getKeys()->swap exposure window: from here until
+            // rotate() completes, an ordinary read served by the archive is
+            // copied forward into the writable backend, so a node fetched
+            // from the doomed archive cannot be left RAM-only when the
+            // archive is deleted. RAII so the early returns below (and any
+            // exception) also clear the flag.
+            struct RotationExposureGuard
+            {
+                NodeStore::DatabaseRotating& db;
+                ~RotationExposureGuard()
+                {
+                    db.setRotationInFlight(false);
+                }
+            };
+            RotationExposureGuard const rotationExposureGuard{*dbRotating_};
+            dbRotating_->setRotationInFlight(true);
 
             JLOG(journal_.debug()) << "freshening caches";
             freshenCaches();
@@ -547,9 +567,10 @@ SHAMapStoreImp::run()
                 return;
             // Only log if we completed without a "health" abort
             JLOG(journal_.debug()) << validatedSeq << " freshened caches";
-            JLOG(journal_.warn())
-                << "SHAMapStore: rotation FRESHEN_DONE id=" << rot
-                << " freshenMisses=" << freshenMissCount_.load();
+            JLOG(journal_.warn()) << "SHAMapStore: rotation FRESHEN_DONE id=" << rot
+                                  << " freshenMisses=" << freshenMissCount_.load()
+                                  << " freshenMissBodiesInCache="
+                                  << freshenMissBodyInCacheCount_.load();
 
             JLOG(journal_.trace()) << "Making a new backend";
             auto newBackend = makeBackendRotating();
@@ -574,11 +595,10 @@ SHAMapStoreImp::run()
                     clearCaches(validatedSeq);
                 });
 
-            JLOG(journal_.warn())
-                << "SHAMapStore: rotation SWAPPED id=" << rot
-                << " newWritable=" << newWritableName
-                << " demotedToArchive=" << writableName_
-                << " droppedArchive=" << archiveName_;
+            JLOG(journal_.warn()) << "SHAMapStore: rotation SWAPPED id=" << rot
+                                  << " newWritable=" << newWritableName
+                                  << " demotedToArchive=" << writableName_
+                                  << " droppedArchive=" << archiveName_;
             JLOG(journal_.warn()) << "finished rotation " << validatedSeq;
         }
     }
@@ -771,10 +791,7 @@ SHAMapStoreImp::freshenCaches()
     if (freshenCache(*app_.getNodeFamily().getTreeNodeCache(), "TreeNodeCache"))
         return;
 
-    freshenCache(
-        app_.getMasterTransaction().getCache(),
-        "MasterTransactionCache",
-        false);
+    freshenCache(app_.getMasterTransaction().getCache(), "MasterTransactionCache", false);
 }
 
 void

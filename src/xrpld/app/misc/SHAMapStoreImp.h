@@ -7,10 +7,12 @@
 #include <xrpl/nodestore/Scheduler.h>
 #include <xrpl/rdb/DatabaseCon.h>
 #include <xrpl/server/State.h>
+#include <xrpl/shamap/SHAMapTreeNode.h>
 
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <type_traits>
 
 namespace xrpl {
 
@@ -107,6 +109,11 @@ private:
     std::atomic<std::uint32_t> copyingSeq_{0};
     std::atomic<std::uint64_t> copyMissCount_{0};
     std::atomic<std::uint64_t> freshenMissCount_{0};
+    // Probe: of the freshen misses, how many still had their body resident
+    // in the cache — i.e. how many a persist-on-miss repair could have
+    // saved. Feeds the go/no-go decision on extending the copyNode re-store
+    // into freshenCache.
+    std::atomic<std::uint64_t> freshenMissBodyInCacheCount_{0};
     std::string writableName_;
     std::string archiveName_;
 
@@ -168,10 +175,7 @@ public:
 private:
     // callback for visitNodes
     bool
-    copyNode(
-        std::uint64_t& nodeCount,
-        SHAMapTreeNode const& node,
-        SHAMapNodeID const& nodeID);
+    copyNode(std::uint64_t& nodeCount, SHAMapTreeNode const& node, SHAMapNodeID const& nodeID);
     void
     run();
     void
@@ -204,42 +208,66 @@ private:
         auto const getKeysT0 = std::chrono::steady_clock::now();
         auto const keys = cache.getKeys();
         auto const getKeysMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   std::chrono::steady_clock::now() - getKeysT0);
-        JLOG(journal_.warn())
-            << "SHAMapStore: freshen BEGIN rotation=" << rotationId_.load()
-            << " cache=" << cacheName << " cacheSize=" << keys.size()
-            << " getKeysMs=" << getKeysMs.count();
+            std::chrono::steady_clock::now() - getKeysT0);
+        JLOG(journal_.warn()) << "SHAMapStore: freshen BEGIN rotation=" << rotationId_.load()
+                              << " cache=" << cacheName << " cacheSize=" << keys.size()
+                              << " getKeysMs=" << getKeysMs.count();
         if (getKeysMs > kGetKeysSlowThresholdMs)
         {
-            JLOG(journal_.warn())
-                << "SHAMapStore: freshen GETKEYS_SLOW rotation="
-                << rotationId_.load() << " cache=" << cacheName
-                << " getKeysMs=" << getKeysMs.count()
-                << " cacheSize=" << keys.size()
-                << " (cache mutex held this long; lookups on other threads "
-                   "may have blocked)";
+            JLOG(journal_.warn()) << "SHAMapStore: freshen GETKEYS_SLOW rotation="
+                                  << rotationId_.load() << " cache=" << cacheName
+                                  << " getKeysMs=" << getKeysMs.count()
+                                  << " cacheSize=" << keys.size()
+                                  << " (cache mutex held this long; lookups on other threads "
+                                     "may have blocked)";
         }
 
         auto const loopT0 = std::chrono::steady_clock::now();
         std::uint64_t check = 0;
         std::uint64_t misses = 0;
+        std::uint64_t missesBodyInCache = 0;
         for (auto const& key : keys)
         {
             // duplicate (copy-forward + backend miss-count) only for caches
             // whose nodes belong in the nodestore; see logMisses note above.
-            auto const obj = dbRotating_->fetchNodeObject(
-                key, 0, NodeStore::FetchType::Synchronous, logMisses);
+            auto const obj =
+                dbRotating_->fetchNodeObject(key, 0, NodeStore::FetchType::Synchronous, logMisses);
             if (!obj)
             {
                 ++misses;
+                // Probe (log-only, nothing stored): would a persist-on-miss
+                // repair be possible here? Only if the node body is still
+                // resident in the cache. TreeNodeCache only: the tx cache
+                // holds Transaction objects, not serializable tree nodes.
+                // Note cache.fetch() touches the entry (refreshes its access
+                // time); acceptable for the probe — it can only delay
+                // eviction of a node that has no disk copy anyway.
+                bool bodyInCache = false;
+                int nodeType = -1;
+                int leaf = -1;
+                std::uint32_t nodeCowid = 0;
+                if constexpr (std::is_same_v<typename CacheInstance::mapped_type, SHAMapTreeNode>)
+                {
+                    if (logMisses)
+                    {
+                        if (auto const node = cache.fetch(key))
+                        {
+                            bodyInCache = true;
+                            ++missesBodyInCache;
+                            nodeType = static_cast<int>(node->getType());
+                            leaf = node->isLeaf() ? 1 : 0;
+                            nodeCowid = node->cowid();
+                        }
+                    }
+                }
                 if (logMisses && misses <= kMaxLoggedPerRotation)
                 {
                     JLOG(journal_.warn())
-                        << "SHAMapStore: freshen MISS rotation="
-                        << rotationId_.load() << " cache=" << cacheName
-                        << " hash=" << key
-                        << " writable=" << writableName_
-                        << " archive=" << archiveName_
+                        << "SHAMapStore: freshen MISS rotation=" << rotationId_.load()
+                        << " cache=" << cacheName << " hash=" << key
+                        << " bodyInCache=" << (bodyInCache ? 1 : 0) << " type=" << nodeType
+                        << " isLeaf=" << leaf << " cowid=" << nodeCowid
+                        << " writable=" << writableName_ << " archive=" << archiveName_
                         << (misses == kMaxLoggedPerRotation
                                 ? " (further per-node MISS lines suppressed; "
                                   "see FRESHEN_DONE for total)"
@@ -250,45 +278,45 @@ private:
             if ((check % progressLogInterval_) == 0u)
             {
                 JLOG(journal_.warn())
-                    << "SHAMapStore: freshen PROGRESS rotation="
-                    << rotationId_.load() << " cache=" << cacheName
-                    << " processed=" << check << " of=" << keys.size()
+                    << "SHAMapStore: freshen PROGRESS rotation=" << rotationId_.load()
+                    << " cache=" << cacheName << " processed=" << check << " of=" << keys.size()
                     << " misses=" << misses;
             }
             if (!(check % checkHealthInterval_) && healthWait() == HealthResult::Stopping)
             {
                 if (logMisses)
+                {
                     freshenMissCount_ += misses;
-                auto const loopMs =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - loopT0);
+                    freshenMissBodyInCacheCount_ += missesBodyInCache;
+                }
+                auto const loopMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - loopT0);
                 JLOG(journal_.warn())
-                    << "SHAMapStore: freshen ABORTED rotation="
-                    << rotationId_.load() << " cache=" << cacheName
-                    << " processed=" << check << " misses=" << misses
-                    << " loopMs=" << loopMs.count()
+                    << "SHAMapStore: freshen ABORTED rotation=" << rotationId_.load()
+                    << " cache=" << cacheName << " processed=" << check << " misses=" << misses
+                    << " bodyInCache=" << missesBodyInCache << " loopMs=" << loopMs.count()
                     << " totalMs=" << (loopMs + getKeysMs).count()
-                    << (!logMisses
-                            ? " (misses expected for this cache; not counted "
-                              "in freshenMisses)"
-                            : "");
+                    << (!logMisses ? " (misses expected for this cache; not counted "
+                                     "in freshenMisses)"
+                                   : "");
                 return true;
             }
         }
         if (logMisses)
+        {
             freshenMissCount_ += misses;
+            freshenMissBodyInCacheCount_ += missesBodyInCache;
+        }
         auto const loopMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - loopT0);
-        JLOG(journal_.warn())
-            << "SHAMapStore: freshen END rotation=" << rotationId_.load()
-            << " cache=" << cacheName
-            << " processed=" << check << " misses=" << misses
-            << " loopMs=" << loopMs.count()
-            << " totalMs=" << (loopMs + getKeysMs).count()
-            << (!logMisses
-                    ? " (misses expected for this cache; not counted in "
-                      "freshenMisses)"
-                    : "");
+        JLOG(journal_.warn()) << "SHAMapStore: freshen END rotation=" << rotationId_.load()
+                              << " cache=" << cacheName << " processed=" << check
+                              << " misses=" << misses << " bodyInCache=" << missesBodyInCache
+                              << " loopMs=" << loopMs.count()
+                              << " totalMs=" << (loopMs + getKeysMs).count()
+                              << (!logMisses ? " (misses expected for this cache; not counted in "
+                                               "freshenMisses)"
+                                             : "");
         return false;
     }
 

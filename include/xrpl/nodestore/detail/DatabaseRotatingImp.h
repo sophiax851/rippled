@@ -60,6 +60,9 @@ public:
     std::pair<std::string, std::string>
     getBackendNames() const override;
 
+    void
+    setRotationInFlight(bool inFlight) override;
+
 private:
     std::shared_ptr<Backend> writableBackend_;
     std::shared_ptr<Backend> archiveBackend_;
@@ -79,6 +82,14 @@ private:
     std::atomic<std::uint64_t> fetchRaceCount_{0};
     std::atomic<std::uint64_t> fetchMissCount_{0};
     static constexpr std::uint64_t kMaxLoggedPerRotation = 10;
+
+    // True between SHAMapStore's pre-freshen setRotationInFlight(true) and
+    // the completion of rotate(). While true, archive hits on ordinary
+    // (duplicate=false) fetches are copied forward into the writable
+    // backend; copyForwardCount_ counts those rescues per window and is
+    // reset in rotate().
+    std::atomic<bool> rotationInFlight_{false};
+    std::atomic<std::uint64_t> copyForwardCount_{0};
 
     std::shared_ptr<NodeObject>
     fetchNodeObject(uint256 const& hash, std::uint32_t, FetchReport& fetchReport, bool duplicate)

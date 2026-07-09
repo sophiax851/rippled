@@ -101,6 +101,7 @@ DatabaseRotatingImp::rotate(
     std::uint64_t prevStoreRaces = 0;
     std::uint64_t prevFetchRaces = 0;
     std::uint64_t prevFetchMisses = 0;
+    std::uint64_t prevCopyForwards = 0;
     {
         std::scoped_lock const lock(mutex_);
 
@@ -126,32 +127,40 @@ DatabaseRotatingImp::rotate(
         prevStoreRaces = storeRaceCount_.exchange(0, std::memory_order_acq_rel);
         prevFetchRaces = fetchRaceCount_.exchange(0, std::memory_order_acq_rel);
         prevFetchMisses = fetchMissCount_.exchange(0, std::memory_order_acq_rel);
+        prevCopyForwards = copyForwardCount_.exchange(0, std::memory_order_acq_rel);
     }
 
-    if (pendingStores > 0 || pendingFetches > 0 || prevStoreRaces > 0 ||
-        prevFetchRaces > 0 || prevFetchMisses > 0)
+    if (pendingStores > 0 || pendingFetches > 0 || prevStoreRaces > 0 || prevFetchRaces > 0 ||
+        prevFetchMisses > 0)
     {
-        JLOG(j_.warn())
-            << "Rotating: SWAP gen=" << newGen
-            << " inFlightStores=" << pendingStores
-            << " inFlightFetches=" << pendingFetches
-            << " prevWindowStoreRaces=" << prevStoreRaces
-            << " prevWindowFetchRaces=" << prevFetchRaces
-            << " prevWindowFetchMisses=" << prevFetchMisses
-            << " newWritable=" << newWritableBackendName
-            << " demotedToArchive=" << newArchiveBackendName
-            << " markedForDelete=" << oldArchiveBackendName;
+        JLOG(j_.warn()) << "Rotating: SWAP gen=" << newGen << " inFlightStores=" << pendingStores
+                        << " inFlightFetches=" << pendingFetches
+                        << " prevWindowStoreRaces=" << prevStoreRaces
+                        << " prevWindowFetchRaces=" << prevFetchRaces
+                        << " prevWindowFetchMisses=" << prevFetchMisses
+                        << " prevWindowCopyForwards=" << prevCopyForwards
+                        << " newWritable=" << newWritableBackendName
+                        << " demotedToArchive=" << newArchiveBackendName
+                        << " markedForDelete=" << oldArchiveBackendName;
     }
     else
     {
-        JLOG(j_.debug())
-            << "Rotating: SWAP clean gen=" << newGen
-            << " newWritable=" << newWritableBackendName
-            << " demotedToArchive=" << newArchiveBackendName
-            << " markedForDelete=" << oldArchiveBackendName;
+        JLOG(j_.debug()) << "Rotating: SWAP clean gen=" << newGen
+                         << " prevWindowCopyForwards=" << prevCopyForwards
+                         << " newWritable=" << newWritableBackendName
+                         << " demotedToArchive=" << newArchiveBackendName
+                         << " markedForDelete=" << oldArchiveBackendName;
     }
 
     f(newWritableBackendName, newArchiveBackendName);
+}
+
+void
+DatabaseRotatingImp::setRotationInFlight(bool inFlight)
+{
+    rotationInFlight_.store(inFlight, std::memory_order_release);
+    JLOG(j_.debug()) << "Rotating: copy-forward on archive reads "
+                     << (inFlight ? "enabled" : "disabled");
 }
 
 std::string
@@ -228,17 +237,15 @@ DatabaseRotatingImp::store(NodeObjectType type, Blob&& data, uint256 const& hash
         if (delta >= 2 || n <= kMaxLoggedPerRotation)
         {
             auto const& strm = (delta >= 2) ? j_.error() : j_.warn();
-            JLOG(strm)
-                << "Rotating: store RACED rotation hash=" << hash
-                << " backend=" << backendName
-                << " genBefore=" << genBefore << " genAfter=" << genAfter
-                << " delta=" << delta
-                << (delta == 1 ? " (wrote into demoted-to-archive backend)"
-                               : " (wrote into backend slated for DELETION)")
-                << (delta == 1 && n == kMaxLoggedPerRotation
-                        ? " (further per-store RACED warns suppressed; see "
-                          "next SWAP for window total)"
-                        : "");
+            JLOG(strm) << "Rotating: store RACED rotation hash=" << hash
+                       << " backend=" << backendName << " genBefore=" << genBefore
+                       << " genAfter=" << genAfter << " delta=" << delta
+                       << (delta == 1 ? " (wrote into demoted-to-archive backend)"
+                                      : " (wrote into backend slated for DELETION)")
+                       << (delta == 1 && n == kMaxLoggedPerRotation
+                               ? " (further per-store RACED warns suppressed; see "
+                                 "next SWAP for window total)"
+                               : "");
         }
     }
 }
@@ -307,9 +314,17 @@ DatabaseRotatingImp::fetchNodeObject(
                 writable = writableBackend_;
             }
 
-            // Update writable backend with data from the archive backend
-            if (duplicate)
+            // Update writable backend with data from the archive backend.
+            // While a rotation is in flight, ordinary (duplicate=false)
+            // reads served by the archive are copied forward too: the
+            // archive is about to be deleted, and a body canonicalized into
+            // the cache after the freshen getKeys() snapshot would
+            // otherwise survive only in RAM once the archive is dropped.
+            bool const rotationInFlight = rotationInFlight_.load(std::memory_order_acquire);
+            if (duplicate || rotationInFlight)
             {
+                if (!duplicate)
+                    ++copyForwardCount_;
                 writable->store(nodeObject);
 
                 // Always-on copy-forward durability check: a node just
@@ -325,16 +340,14 @@ DatabaseRotatingImp::fetchNodeObject(
                 {
                     JLOG(j_.error())
                         << "Rotating: verify-after-store FAILED hash=" << hash
-                        << " writable=" << writable->getName()
-                        << " status=" << static_cast<int>(st)
+                        << " writable=" << writable->getName() << " status=" << static_cast<int>(st)
                         << " (copy-forward store not immediately readable)";
                 }
                 else if (traceTarget && hash == *traceTarget)
                 {
-                    JLOG(j_.debug())
-                        << "Rotating: TRACE verify-after-store hash=" << hash
-                        << " writable=" << writable->getName()
-                        << " readBack=ok status=" << static_cast<int>(st);
+                    JLOG(j_.debug()) << "Rotating: TRACE verify-after-store hash=" << hash
+                                     << " writable=" << writable->getName()
+                                     << " readBack=ok status=" << static_cast<int>(st);
                 }
             }
         }
@@ -346,14 +359,13 @@ DatabaseRotatingImp::fetchNodeObject(
             auto const n = ++fetchMissCount_;
             if (n <= kMaxLoggedPerRotation)
             {
-                JLOG(j_.warn())
-                    << "Rotating: fetchNodeObject MISS (both backends) hash="
-                    << hash << " writable=" << writable->getName()
-                    << " archive=" << archive->getName()
-                    << (n == kMaxLoggedPerRotation
-                            ? " (further per-fetch MISS warns suppressed; "
-                              "see next SWAP for window total)"
-                            : "");
+                JLOG(j_.warn()) << "Rotating: fetchNodeObject MISS (both backends) hash=" << hash
+                                << " writable=" << writable->getName()
+                                << " archive=" << archive->getName()
+                                << (n == kMaxLoggedPerRotation
+                                        ? " (further per-fetch MISS warns suppressed; "
+                                          "see next SWAP for window total)"
+                                        : "");
             }
         }
     }
@@ -362,12 +374,11 @@ DatabaseRotatingImp::fetchNodeObject(
     // node (or none) for copy/freshen (duplicate=true) and normal reads.
     if (traceTarget && hash == *traceTarget)
     {
-        JLOG(j_.debug())
-            << "Rotating: TRACE fetchNodeObject hash=" << hash
-            << " duplicate=" << (duplicate ? "yes" : "no") << " foundIn="
-            << (nodeObject ? (foundInArchive ? "archive" : "writable") : "none")
-            << " writable=" << writable->getName()
-            << " archive=" << archive->getName();
+        JLOG(j_.debug()) << "Rotating: TRACE fetchNodeObject hash=" << hash
+                         << " duplicate=" << (duplicate ? "yes" : "no") << " foundIn="
+                         << (nodeObject ? (foundInArchive ? "archive" : "writable") : "none")
+                         << " writable=" << writable->getName()
+                         << " archive=" << archive->getName();
     }
 
     if (nodeObject)
@@ -383,16 +394,15 @@ DatabaseRotatingImp::fetchNodeObject(
         auto const n = ++fetchRaceCount_;
         if (n <= kMaxLoggedPerRotation)
         {
-            JLOG(j_.warn())
-                << "Rotating: fetchNodeObject RACED rotation hash=" << hash
-                << " genBefore=" << genBefore << " genAfter=" << genAfter
-                << " delta=" << (genAfter - genBefore)
-                << " found=" << (nodeObject ? "yes" : "no")
-                << " duplicate=" << (duplicate ? "yes" : "no")
-                << (n == kMaxLoggedPerRotation
-                        ? " (further per-fetch RACED warns suppressed; "
-                          "see next SWAP for window total)"
-                        : "");
+            JLOG(j_.warn()) << "Rotating: fetchNodeObject RACED rotation hash=" << hash
+                            << " genBefore=" << genBefore << " genAfter=" << genAfter
+                            << " delta=" << (genAfter - genBefore)
+                            << " found=" << (nodeObject ? "yes" : "no")
+                            << " duplicate=" << (duplicate ? "yes" : "no")
+                            << (n == kMaxLoggedPerRotation
+                                    ? " (further per-fetch RACED warns suppressed; "
+                                      "see next SWAP for window total)"
+                                    : "");
         }
     }
 

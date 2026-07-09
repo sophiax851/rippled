@@ -34,6 +34,7 @@
 #include <boost/filesystem/path.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -376,9 +377,13 @@ SHAMapStoreImp::copyNode(
         // only on-disk copy was dropped by an earlier rotation; without
         // this re-store it would later surface as an unresolvable
         // SHAMapMissingNode.
+        auto const restoreT0 = std::chrono::steady_clock::now();
         Serializer s;
         node.serializeWithPrefix(s);
         dbRotating_->store(NodeObjectType::AccountNode, std::move(s.modData()), hash, 0);
+        restoreMicros_ += std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - restoreT0)
+                              .count();
         if (n <= kMaxLoggedPerRotation)
         {
             JLOG(journal_.warn()) << "SHAMapStore: copyNode RESTORED rotation="
@@ -485,6 +490,7 @@ SHAMapStoreImp::run()
             auto const rot = ++rotationId_;
             copyingSeq_ = validatedSeq;
             copyMissCount_ = 0;
+            restoreMicros_ = 0;
             freshenMissCount_ = 0;
             {
                 auto const names = dbRotating_->getBackendNames();
@@ -542,7 +548,8 @@ SHAMapStoreImp::run()
                 << "copied ledger " << validatedSeq << " nodecount " << nodeCount;
             JLOG(journal_.warn()) << "SHAMapStore: rotation COPY_DONE id=" << rot
                                   << " seq=" << validatedSeq << " nodeCount=" << nodeCount
-                                  << " copyMisses=" << copyMissCount_.load();
+                                  << " copyMisses=" << copyMissCount_.load()
+                                  << " restoredMs=" << (restoreMicros_.load() / 1000);
 
             // Close the getKeys()->swap exposure window: from here until
             // rotate() completes, an ordinary read served by the archive is

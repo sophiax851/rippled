@@ -108,6 +108,10 @@ private:
     std::atomic<std::uint64_t> rotationId_{0};
     std::atomic<std::uint32_t> copyingSeq_{0};
     std::atomic<std::uint64_t> copyMissCount_{0};
+    // Overhead probe for the copyNode re-store fix: time spent
+    // serializing+storing missed bodies, per rotation. Reset with
+    // copyMissCount_ and reported on COPY_DONE as restoredMs.
+    std::atomic<std::uint64_t> restoreMicros_{0};
     std::atomic<std::uint64_t> freshenMissCount_{0};
     // Probe: of the freshen misses, how many still had their body resident
     // in the cache — i.e. how many a persist-on-miss repair could have

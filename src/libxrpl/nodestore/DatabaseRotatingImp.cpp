@@ -13,6 +13,7 @@
 #include <xrpl/nodestore/Scheduler.h>
 #include <xrpl/nodestore/Types.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -102,6 +103,7 @@ DatabaseRotatingImp::rotate(
     std::uint64_t prevFetchRaces = 0;
     std::uint64_t prevFetchMisses = 0;
     std::uint64_t prevCopyForwards = 0;
+    std::uint64_t prevCopyForwardMicros = 0;
     {
         std::scoped_lock const lock(mutex_);
 
@@ -128,6 +130,7 @@ DatabaseRotatingImp::rotate(
         prevFetchRaces = fetchRaceCount_.exchange(0, std::memory_order_acq_rel);
         prevFetchMisses = fetchMissCount_.exchange(0, std::memory_order_acq_rel);
         prevCopyForwards = copyForwardCount_.exchange(0, std::memory_order_acq_rel);
+        prevCopyForwardMicros = copyForwardMicros_.exchange(0, std::memory_order_acq_rel);
     }
 
     if (pendingStores > 0 || pendingFetches > 0 || prevStoreRaces > 0 || prevFetchRaces > 0 ||
@@ -139,6 +142,7 @@ DatabaseRotatingImp::rotate(
                         << " prevWindowFetchRaces=" << prevFetchRaces
                         << " prevWindowFetchMisses=" << prevFetchMisses
                         << " prevWindowCopyForwards=" << prevCopyForwards
+                        << " prevWindowCopyForwardMs=" << (prevCopyForwardMicros / 1000)
                         << " newWritable=" << newWritableBackendName
                         << " demotedToArchive=" << newArchiveBackendName
                         << " markedForDelete=" << oldArchiveBackendName;
@@ -147,6 +151,7 @@ DatabaseRotatingImp::rotate(
     {
         JLOG(j_.debug()) << "Rotating: SWAP clean gen=" << newGen
                          << " prevWindowCopyForwards=" << prevCopyForwards
+                         << " prevWindowCopyForwardMs=" << (prevCopyForwardMicros / 1000)
                          << " newWritable=" << newWritableBackendName
                          << " demotedToArchive=" << newArchiveBackendName
                          << " markedForDelete=" << oldArchiveBackendName;
@@ -323,8 +328,16 @@ DatabaseRotatingImp::fetchNodeObject(
             bool const rotationInFlight = rotationInFlight_.load(std::memory_order_acquire);
             if (duplicate || rotationInFlight)
             {
+                // Overhead probe: time the flag-forced store+verify only
+                // (duplicate=false). The duplicate=true copy-walk path is
+                // untimed to keep the bulk-copy hot path free of clock
+                // calls.
+                std::optional<std::chrono::steady_clock::time_point> cfT0;
                 if (!duplicate)
+                {
                     ++copyForwardCount_;
+                    cfT0 = std::chrono::steady_clock::now();
+                }
                 writable->store(nodeObject);
 
                 // Always-on copy-forward durability check: a node just
@@ -348,6 +361,13 @@ DatabaseRotatingImp::fetchNodeObject(
                     JLOG(j_.debug()) << "Rotating: TRACE verify-after-store hash=" << hash
                                      << " writable=" << writable->getName()
                                      << " readBack=ok status=" << static_cast<int>(st);
+                }
+
+                if (cfT0)
+                {
+                    copyForwardMicros_ += std::chrono::duration_cast<std::chrono::microseconds>(
+                                              std::chrono::steady_clock::now() - *cfT0)
+                                              .count();
                 }
             }
         }

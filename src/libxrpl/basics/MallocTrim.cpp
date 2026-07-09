@@ -91,10 +91,14 @@ mallocTrim(std::string_view tag, beast::Journal journal)
 
     report.supported = true;
 
-    // Threshold above which the trim is treated as a stall event: malloc_trim
-    // holds the glibc arena lock for its entire duration, blocking malloc/free
-    // on every other thread in the process. Emit at warn level so these events
-    // are visible alongside other diagnostics without requiring debug logging.
+    // Threshold above which the trim is treated as a stall event. glibc's
+    // malloc_trim walks the arena list locking ONE arena at a time, so
+    // duration_us is the sum of the sequential per-arena lock holds and is an
+    // upper bound on how long any single thread could block. While an arena is
+    // locked, only malloc/free calls that miss the per-thread tcache AND
+    // target that arena block; threads on other arenas (and tcache hits)
+    // proceed. Emit at warn level so these events are visible alongside other
+    // diagnostics without requiring debug logging.
     static constexpr std::chrono::microseconds kSlowThresholdUs{50'000};
 
     auto readFile = [](std::string const& path) -> std::string {
@@ -173,20 +177,18 @@ mallocTrim(std::string_view tag, beast::Journal journal)
         ? 0
         : (static_cast<std::int64_t>(rssAfterKB) - static_cast<std::int64_t>(rssBeforeKB));
 
-    bool const haveBetween = prevExitRssKB >= 0 && prevExitProcMinflt >= 0
-        && prevExitSteadyNs >= 0 && haveProcEntry && rssBeforeKB >= 0;
+    bool const haveBetween = prevExitRssKB >= 0 && prevExitProcMinflt >= 0 &&
+        prevExitSteadyNs >= 0 && haveProcEntry && rssBeforeKB >= 0;
     std::string betweenSuffix;
     if (haveBetween)
     {
         std::int64_t const betweenMs = (t0Ns - prevExitSteadyNs) / 1'000'000;
         std::int64_t const rssGrowthKB =
             static_cast<std::int64_t>(rssBeforeKB) - static_cast<std::int64_t>(prevExitRssKB);
-        std::int64_t const procMinfltDelta =
-            static_cast<std::int64_t>(ruProcEntry.ru_minflt)
-            - static_cast<std::int64_t>(prevExitProcMinflt);
+        std::int64_t const procMinfltDelta = static_cast<std::int64_t>(ruProcEntry.ru_minflt) -
+            static_cast<std::int64_t>(prevExitProcMinflt);
         std::ostringstream b;
-        b << " between_trims_ms=" << betweenMs
-          << " rss_growth_kB=" << rssGrowthKB
+        b << " between_trims_ms=" << betweenMs << " rss_growth_kB=" << rssGrowthKB
           << " process_minflt=" << procMinfltDelta;
         betweenSuffix = b.str();
     }
@@ -199,13 +201,11 @@ mallocTrim(std::string_view tag, beast::Journal journal)
                  << " rss_after=" << rssAfterKB << "kB"
                  << " delta=" << deltaKB << "kB"
                  << " duration_us=" << report.durationUs.count()
-                 << " minflt_delta=" << report.minfltDelta
-                 << " majflt_delta=" << report.majfltDelta
+                 << " minflt_delta=" << report.minfltDelta << " majflt_delta=" << report.majfltDelta
                  << betweenSuffix
-                 << (slow
-                         ? " SLOW (arena lock held; allocations on each arena "
-                           "may have blocked sequentially)"
-                         : "");
+                 << (slow ? " SLOW (arena lock held; allocations on each arena "
+                            "may have blocked sequentially)"
+                          : "");
 
 #endif
 

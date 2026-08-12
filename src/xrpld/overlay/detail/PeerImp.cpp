@@ -1105,8 +1105,16 @@ PeerImp::onMessage(std::shared_ptr<protocol::TMManifests> const& m)
         return;
     }
 
-    if (s > 100)
-        fee_.update(resource::kFeeModerateBurdenPeer, "oversize");
+    // Admission-time charge: manifest processing (per-item signature
+    // verification and cache updates) runs later on the JtManifest worker.
+    // Honest peers send manifests only on validator key rotation and deliver
+    // the startup snapshot as a single bundled message, so a moderate
+    // per-message charge is negligible for them but severs a peer that floods
+    // the job queue with manifest messages. An oversized message is charged
+    // more heavily on its own.
+    fee_.update(
+        s > 100 ? resource::kFeeHeavyBurdenPeer : resource::kFeeModerateBurdenPeer,
+        s > 100 ? "oversize" : "manifests");
 
     // OverlayImpl::onManifests bounds the untrusted work and charges the fee
     // if the untrusted count exceeds the per-message cap; trusted manifests
